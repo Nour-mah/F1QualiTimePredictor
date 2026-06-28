@@ -216,3 +216,35 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# === Jupyter ===
+.ipynb_checkpoints/
+
+# === FastF1 cache ===
+data/cache/
+
+# === Données (en attendant DVC) ===
+data/raw/
+data/processed/
+
+# === MLflow ===
+mlruns/
+mlartifacts/
+
+# === Modèles entraînés ===
+*.pth
+*.pkl
+*.joblib
+
+# === DVC ===
+.dvc/cache
+.dvc/tmp
+
+# === Docker ===
+*.log
+
+# === IDE ===
+.vscode/
+.idea/
+.DS_Store
