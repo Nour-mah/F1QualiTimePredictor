@@ -20,7 +20,12 @@ def load_session_laps(year, gp_name, session_name):
     df = df[df["IsAccurate"]]
 
     df['LapTime'] = pd.to_timedelta(df['LapTime'])
-    df = df.groupby(['Driver']).agg(BestTime = ('LapTime', "min")).rename(columns={'BestTime': f'{session_name}_best_time'})
+    df = df.groupby(['Driver']).agg(BestTime = ('LapTime', "min")).rename(columns={'BestTime': f'{session_name}_best_time' })
+
+    # On remplace les meilleurs temps d'essais libre par le l'ecart en % par rapport au meilleur temps de la session
+    best_time = df[f'{session_name}_best_time'].min()
+    df[f'{session_name}_best_time'] = (df[f'{session_name}_best_time'] - best_time) / best_time * 100
+    df = df.rename(columns={f'{session_name}_best_time': f'{session_name}_gap_to_best_pct'})
 
     return df
 
