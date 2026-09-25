@@ -248,3 +248,6 @@ mlartifacts/
 .vscode/
 .idea/
 .DS_Store
+
+# === Project-specific files ===
+Architechture du projet.png
