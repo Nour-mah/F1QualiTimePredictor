@@ -48,3 +48,5 @@ def session_loader():
                     except Exception as e:
                         print(f"ERREUR : {e}")
 
+if __name__ == "__main__":
+    session_loader()
