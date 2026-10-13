@@ -1,6 +1,6 @@
 # F1 Quali Time Predictor
 
-Predicting each driver's Q3 qualifying gap to pole, from Friday/Saturday free-practice (FP1-3) data — built with [FastF1](https://github.com/theOehrly/Fast-F1).
+Predicting the Q3 qualifying order (top 10) of a Formula 1 Grand Prix from free-practice (FP1-3) data and each driver's recent qualifying form — built with [FastF1](https://github.com/theOehrly/Fast-F1).
 
 This is a portfolio project focused as much on **MLOps and Docker practices** (reproducible pipelines, experiment tracking, containerized serving) as on the modeling itself. It's a work in progress, built and documented incrementally.
 
@@ -12,43 +12,52 @@ For each Grand Prix, the pipeline:
    - `FP{n}_gap_to_best_pct`: best lap as a percentage gap to the best lap of the session
    - `FP{n}_compound`: tyre compound of that best lap (0 = soft, 1 = medium, 2 = hard, 3 = intermediate, 4 = wet)
    - `FP{n}_laps_ratio`: number of clean laps divided by the maximum of the session
-3. Adds relative weather features from the free-practice sessions only (qualifying weather would leak information): track/air temperature change between the first and last FP session, and rain.
-4. Computes the target: `gap_to_pole_pct = (driver's Q3 time - pole time) / pole time * 100`, sourced from the official Q3 results (not just the fastest lap of the session).
-5. Builds one row per driver × Grand Prix, restricted to the Q3 top 10, and sorts the dataset chronologically.
+3. Adds the driver's recent form: `driver_quali_pos_avg`, the mean qualifying position over the 5 previous Grands Prix (strictly earlier ones only, to avoid leaking the target).
+4. Computes two targets from the official qualifying results:
+   - `quali_position`: final position in the top 10 (main target)
+   - `gap_to_pole_pct = (driver's Q3 time - pole time) / pole time * 100` (secondary target)
+5. Builds one row per driver × Grand Prix, restricted to the official top 10, and sorts the dataset chronologically.
 
-Drivers need at least 2 valid FP sessions. Missing session values are left as `NaN` (no imputation; XGBoost handles them natively).
+Drivers need at least 2 valid FP sessions. Missing values are left as `NaN` (no imputation; XGBoost handles them natively).
 
-Data window: 2022–2026 seasons, conventional (non-sprint) weekends only (78 Grands Prix, 761 rows).
+Data window: 2022–2026 seasons, conventional (non-sprint) weekends only (78 Grands Prix, 780 rows).
 
 ## Modeling approach
 
-- **Relative features.** Absolute lap times depend on the circuit (a 1'30" is great at Monza, poor at Monaco), so the model is fed relative gaps. Switching from absolute times to relative gaps took the XGBoost RMSE on a single split from 1.80 to 0.62.
-- **Temporal validation.** No random split: it would leak information between drivers of the same Grand Prix and between past and future. The model is evaluated with a **time-series cross-validation** in blocks of 10 Grands Prix (expanding training window, 5 folds).
-- **Naive baseline.** Every fold also reports the RMSE of a model that always predicts the training mean, to check that the model actually learns something.
+- **Learning to rank.** The main task is to order the 10 drivers within each Grand Prix, so the model is an `XGBRanker` trained with one group per Grand Prix. It is scored with the **Spearman correlation** between predicted and actual order, computed per Grand Prix and averaged (1 = perfect order).
+- **A strong reference.** The model is compared to the order of the last free-practice session (FP3, falling back on FP2 then FP1). It is a much more demanding baseline than predicting a constant.
+- **Temporal validation.** No random split: it would leak information between drivers of the same Grand Prix and between past and future. Evaluation uses a **time-series cross-validation** in blocks of 10 Grands Prix (expanding training window, 5 folds).
+- **Relative features.** Absolute lap times depend on the circuit, so the model is fed gaps relative to the session's best lap.
+- **A deliberately simple model.** With ~700 rows, default XGBoost parameters (depth 6) overfit and score below the reference. The model uses depth-1 trees, 100 estimators and a 0.05 learning rate.
 
-- **One feature group at a time.** Each new group is added on top of the FP gaps and compared to the baseline, to know which one actually helps.
+### Current results (5-fold temporal CV)
 
-### Current results (5-fold temporal CV, XGBoost default params, RMSE in percentage points)
+Ranking the top 10 (Spearman, higher is better):
 
-| Features | RMSE (mean) |
+| Model | Spearman (mean ± std) |
 |---|---|
-| Naive baseline (train mean) | **0.9094** |
-| FP gaps only | 0.9235 |
-| + tyre compound | 0.95 |
-| + rain | 0.95 |
-| + temperature change | 1.13 |
-| + laps ratio | 1.36 |
-| + absolute weather (temperatures, humidity, wind) | 2.09 |
+| Reference: free-practice order | 0.604 ± 0.077 |
+| XGBRanker, FP gaps only | 0.606 ± 0.063 |
+| XGBRanker, driver history only | 0.578 ± 0.065 |
+| **XGBRanker, FP gaps + driver history** | **0.651 ± 0.042** |
+| + tyre compound + laps ratio | 0.649 ± 0.042 |
 
-**No feature set beats the naive baseline yet.** Absolute weather values act as a fingerprint of the circuit, so the model memorizes Grands Prix instead of learning general rules; relative weather is much less harmful but still doesn't help. With only 78 Grands Prix and noisy free-practice data (different run programs, fuel loads), the signal is weak. A learning curve suggests more data would help a little; options under consideration: adding the 2018–2021 seasons, a more regularized or simpler model.
+Free-practice pace and recent form complement each other: combined, they beat the free-practice order on average and are more consistent across folds. The gain comes mostly from the two oldest folds; on the three most recent ones the reference stays slightly ahead, so the improvement is real but modest. Hyperparameters were chosen on these same folds, which makes the scores slightly optimistic.
+
+Predicting the gap to pole (RMSE in percentage points, lower is better): 0.805 with FP gaps + driver history, against 0.910 for a naive model predicting the training mean.
+
+### What did not work
+
+- **Absolute lap times** as features: circuit-dependent, far worse than the naive baseline.
+- **Weather** (removed): identical for every driver of a Grand Prix, so it cannot change their order; absolute values also act as a fingerprint of the circuit and cause overfitting.
+- **Tyre compound and laps ratio**: no measurable gain so far (still available as feature groups).
 
 ## Project status
 
 - [x] Data collection from FastF1 (`src/data/fetch_fastf1.py`)
 - [x] Per-GP feature engineering + full dataset assembly (`src/data/build_features_tabular.py`)
-- [x] Baseline XGBoost with temporal cross-validation (`src/models/train_classical.py`)
-- [x] Feature experiments: tyre compound, laps ratio, weather (selectable feature groups)
-- [ ] Improve the model (more seasons, regularization, simpler models)
+- [x] Ranking model with temporal cross-validation and selectable feature groups (`src/models/train_classical.py`)
+- [ ] Improve the model (teammate-relative features, more seasons)
 - [ ] Tensor-based pipeline for a PyTorch model (Phase 2)
 - [ ] Experiment tracking (MLflow)
 - [ ] Serving API
@@ -59,7 +68,7 @@ Data window: 2022–2026 seasons, conventional (non-sprint) weekends only (78 Gr
 
 ## Stack
 
-Python, pandas, FastF1, scikit-learn, XGBoost. Planned: PyTorch, MLflow, Docker, DVC.
+Python, pandas, FastF1, scikit-learn, SciPy, XGBoost. Planned: PyTorch, MLflow, Docker, DVC.
 
 ## Repo structure
 
@@ -69,7 +78,7 @@ src/
 │   ├── fetch_fastf1.py           # Pulls raw session data from FastF1
 │   └── build_features_tabular.py # Builds the per-GP tabular dataset
 └── models/
-    └── train_classical.py        # XGBoost baseline + temporal cross-validation, selectable feature groups
+    └── train_classical.py        # XGBoost ranker/regressor + temporal cross-validation
 
 data/            # raw/processed data, gitignored (not versioned in git)
 ```
@@ -82,6 +91,7 @@ python fetch_fastf1.py            # populates data/raw/ (long-running, respects 
 python build_features_tabular.py  # builds data/processed/tabular/F1_features_dataset_<timestamp>.csv
 
 cd ../models
-python train_classical.py         # loads the latest dataset, runs the temporal CV, prints RMSE per fold
-python train_classical.py --features gap compound rain   # choose feature groups: gap (default), compound, laps, rain, temp_delta
+python train_classical.py                                # ranking of the top 10, features: gap + history
+python train_classical.py --features gap history compound laps   # feature groups: gap, history, compound, laps
+python train_classical.py --target gap                   # secondary task: regression of the gap to pole
 ```

@@ -8,6 +8,7 @@ raw_dir = os.path.join(BASE_DIR, "../../data/raw")
 processed_dir = os.path.join(BASE_DIR, "../../data/processed/tabular")
 os.makedirs(processed_dir, exist_ok=True)
 
+HISTORY_WINDOW = 5  # nombre de qualifications précédentes prises en compte dans l'historique du pilote
 COMPOUND_MAP = {'SOFT': 0, 'MEDIUM': 1, 'HARD': 2, 'INTERMEDIATE': 3, 'WET': 4}
 
 def load_session_laps(year, gp_name, session_name):
@@ -39,26 +40,6 @@ def load_session_laps(year, gp_name, session_name):
 
     return out
 
-def load_fp_weather(year, gp_name):
-    """Météo moyenne des essais libres (FP1-3 uniquement : la météo de Q ne serait pas connue avant la quali)."""
-    safe_event = gp_name.replace(" ", "_")
-    frames = []
-    for session_name in ['FP1', 'FP2', 'FP3']:
-        path = os.path.join(raw_dir, f"{year}_{safe_event}_{session_name}_weather.csv")
-        if os.path.exists(path):
-            frames.append(pd.read_csv(path))
-    if not frames:
-        return {}
-    all_weather = pd.concat(frames, ignore_index=True)
-    first, last = frames[0], frames[-1]
-    # Features relatives : évolution entre la première et la dernière session FP, et pluie (pas de valeurs absolues, trop liées au circuit)
-    return {
-        'fp_track_temp_delta': last['TrackTemp'].mean() - first['TrackTemp'].mean(),
-        'fp_air_temp_delta': last['AirTemp'].mean() - first['AirTemp'].mean(),
-        'fp_rain_any': float(all_weather['Rainfall'].any()),
-        'fp_rain_frac': all_weather['Rainfall'].astype(float).mean(),
-    }
-
 def build_gp_features(year, gp_name):
     sessions = {}
     for session_name in ['FP1', 'FP2', 'FP3']:
@@ -89,28 +70,21 @@ def build_gp_features(year, gp_name):
 
     df_results = pd.read_csv(results_path)
 
-    # Récupérer le temps de pole (position 1, colonne Q3)
-    pole_time = pd.to_timedelta(df_results[df_results['Position'] == 1]['Q3'].iloc[0])
-    
-    # Ne garder que les pilotes avec un temps en Q3
-    df_q3 = df_results[['Abbreviation', 'Q3']].dropna(subset=['Q3'])
-    df_q3['Q3'] = pd.to_timedelta(df_q3['Q3'])
+    # Top 10 officiel de la qualification, y compris les pilotes sans temps en Q3.
+    # Position en double (pilote disqualifié après coup, ex. Pays-Bas 2024) : on garde le premier listé, le classé officiel.
+    df_q3 = df_results[df_results['Position'] <= 10].drop_duplicates(subset='Position', keep='first')
+    df_q3 = df_q3[['Abbreviation', 'Position', 'Q3']].rename(columns={'Abbreviation': 'Driver', 'Position': 'quali_position'})
+    df_q3['quali_position'] = df_q3['quali_position'].astype(int)
 
-    # Calculer l'écart en % au temps de pole
+    # Ecart en % au temps de pole (NaN pour les pilotes du top 10 sans temps en Q3)
+    df_q3['Q3'] = pd.to_timedelta(df_q3['Q3'])
+    pole_time = df_q3.loc[df_q3['quali_position'] == 1, 'Q3'].iloc[0]
     df_q3['gap_to_pole_pct'] = (df_q3['Q3'] - pole_time) / pole_time * 100
 
     # Merger avec les features EL sur la clé Driver
-    df_q3 = df_q3.rename(columns={'Abbreviation': 'Driver'})
-    df_final = df_practice.merge(df_q3[['Driver', 'gap_to_pole_pct']], on='Driver', how='inner')
+    df_final = df_practice.merge(df_q3[['Driver', 'quali_position', 'gap_to_pole_pct']], on='Driver', how='inner')
 
-    # Météo des essais libres : valeur identique pour tous les pilotes du GP
-    for col, value in load_fp_weather(year, gp_name).items():
-        df_final[col] = value
-
-    # Trier par gap_to_pole_pct et ne garder que les 10 pilotes Q3
-    df_final = df_final.sort_values('gap_to_pole_pct').head(10)
-
-    return df_final
+    return df_final.sort_values('quali_position')
 
 def discover_gps():
     """Liste les (year, gp_name) disponibles en scannant les résultats Q déjà enregistrés dans raw_dir."""
@@ -144,20 +118,40 @@ def get_gp_date(year, gp_name):
         return None
 
 
+def build_driver_history(gp_dates):
+    """Position moyenne de chaque pilote sur ses HISTORY_WINDOW qualifications précédentes (tous les pilotes, pas seulement le top 10)."""
+    all_results = []
+    for (year, gp_name), date in gp_dates.items():
+        results = pd.read_csv(os.path.join(raw_dir, f"{year}_{gp_name.replace(' ', '_')}_Q_results.csv"))
+        results = results[['Abbreviation', 'Position']].rename(columns={'Abbreviation': 'Driver'})
+        results['Date'] = date
+        all_results.append(results)
+    history = pd.concat(all_results, ignore_index=True).sort_values('Date')
+
+    # shift(1) : uniquement les GP strictement antérieurs, sinon la position à prédire fuit dans la feature
+    history['driver_quali_pos_avg'] = history.groupby('Driver')['Position'].transform(
+        lambda positions: positions.shift(1).rolling(HISTORY_WINDOW, min_periods=1).mean())
+    return history[['Driver', 'Date', 'driver_quali_pos_avg']]
+
+
 def build_dataset():
+    gp_dates = {gp: get_gp_date(*gp) for gp in discover_gps()}
+
     datasets = []
-    for year, gp_name in discover_gps():
+    for (year, gp_name), date in gp_dates.items():
         df = build_gp_features(year, gp_name)
         if df is None:
             print(f"\n Skipping {year} {gp_name} due to insufficient data.")
             continue
         df['Year'] = year
         df['Event'] = gp_name
-        df['Date'] = get_gp_date(year, gp_name)
+        df['Date'] = date
         datasets.append(df)
         print(f"\n Processed {year} {gp_name} with {len(df)} drivers.")
 
     DS = pd.concat(datasets, ignore_index=True)
+    # Historique du pilote (NaN pour sa toute première qualification du dataset)
+    DS = DS.merge(build_driver_history(gp_dates), on=['Driver', 'Date'], how='left')
     DS.sort_values('Date', inplace=True)
     DS.to_csv(os.path.join(processed_dir, f"F1_features_dataset_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"), index=False)
     print(f"\n ===== Dataset built with {len(DS)} rows across {len(datasets)} Grand Prix and saved to {processed_dir}. =====")
