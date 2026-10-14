@@ -8,7 +8,7 @@ from xgboost import XGBRanker
 SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, SRC_DIR)
 
-from data.build_features_tabular import build_fp_features, current_driver_form, get_gp_date, raw_dir
+from data.build_features_tabular import build_fp_features, current_driver_form, current_team_form, get_gp_date, raw_dir
 from models.train_classical import FEATURE_GROUPS, POSITION_TARGET, PROJECT_ROOT, XGB_PARAMS, load_data, select_features
 
 predictions_dir = os.path.join(PROJECT_ROOT, "data/predictions")
@@ -21,6 +21,7 @@ def predict_gp(year, gp_name, groups):
     if gp_date is None or new_gp is None:
         sys.exit(f"Pas assez d'essais libres dans data/raw pour {year} {gp_name} (au moins 2 séances) : lancer d'abord src/data/fetch_fastf1.py.")
     new_gp = new_gp.merge(current_driver_form(gp_date), on='Driver', how='left')
+    new_gp = new_gp.merge(current_team_form(gp_date), on='Team', how='left')
 
     # Entraînement sur les GP strictement antérieurs : on peut ainsi rejouer un GP passé sans fuite
     df, data_path = load_data()

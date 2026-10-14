@@ -59,9 +59,20 @@ def build_fp_features(year, gp_name):
     # On conserve les pilotes ayant au moins deux séances d'essais libres valides (colonnes d'écart uniquement)
     # Les valeurs manquantes restent NaN (XGBoost les gère nativement)
     gap_cols = [c for c in df_practice.columns if c.endswith('_gap_to_best_pct')]
-    df_practice = df_practice[df_practice[gap_cols].notna().sum(axis=1) >= 2]
+    df_practice = df_practice[df_practice[gap_cols].notna().sum(axis=1) >= 2].reset_index()
 
-    return df_practice.reset_index()
+    # Equipe de chaque pilote (connue avant la qualification), pour la forme de l'équipe
+    return df_practice.merge(load_driver_teams(year, gp_name), on='Driver', how='left')
+
+def load_driver_teams(year, gp_name):
+    """Equipe de chaque pilote d'après les tours des essais libres."""
+    safe_event = gp_name.replace(" ", "_")
+    teams = []
+    for session_name in ['FP1', 'FP2', 'FP3']:
+        path = os.path.join(raw_dir, f"{year}_{safe_event}_{session_name}_laps.csv")
+        if os.path.exists(path):
+            teams.append(pd.read_csv(path, usecols=['Driver', 'Team']))
+    return pd.concat(teams).dropna().drop_duplicates(subset='Driver', keep='last')
 
 def build_gp_features(year, gp_name):
     """Features des essais libres + cibles (position et écart au pole) pour le top 10 officiel de la qualification."""
@@ -126,29 +137,54 @@ def load_quali_positions(gp_dates):
     all_results = []
     for (year, gp_name), date in gp_dates.items():
         results = pd.read_csv(os.path.join(raw_dir, f"{year}_{gp_name.replace(' ', '_')}_Q_results.csv"))
-        results = results[['Abbreviation', 'Position']].rename(columns={'Abbreviation': 'Driver'})
+        results = results[['Abbreviation', 'TeamName', 'Position']].rename(columns={'Abbreviation': 'Driver', 'TeamName': 'Team'})
         results['Date'] = date
+        results['Season'] = year
         all_results.append(results)
     return pd.concat(all_results, ignore_index=True).sort_values('Date')
 
 
 def build_driver_history(gp_dates):
-    """Position moyenne de chaque pilote sur ses HISTORY_WINDOW qualifications précédentes."""
+    """Position moyenne de chaque pilote sur ses HISTORY_WINDOW qualifications précédentes de la même saison."""
     history = load_quali_positions(gp_dates)
 
+    # Remise à zéro à chaque saison : changements d'équipe et de réglementation rendent l'historique précédent trompeur.
+    # Au premier GP de la saison, tous les pilotes sont en NaN : la feature ne départage personne, le modèle s'appuie sur les essais libres.
     # shift(1) : uniquement les GP strictement antérieurs, sinon la position à prédire fuit dans la feature
-    history['driver_quali_pos_avg'] = history.groupby('Driver')['Position'].transform(
+    history['driver_quali_pos_avg'] = history.groupby(['Driver', 'Season'])['Position'].transform(
         lambda positions: positions.shift(1).rolling(HISTORY_WINDOW, min_periods=1).mean())
     return history[['Driver', 'Date', 'driver_quali_pos_avg']]
 
 
-def current_driver_form(before_date):
-    """Même feature que build_driver_history, pour un GP sans résultats : moyenne des HISTORY_WINDOW dernières qualifications avant before_date."""
+def build_team_history(gp_dates):
+    """Position moyenne des pilotes de chaque équipe sur ses HISTORY_WINDOW GP précédents de la même saison."""
+    positions = load_quali_positions(gp_dates)
+    team_gp = positions.groupby(['Team', 'Season', 'Date'], as_index=False)['Position'].mean().sort_values('Date')
+    # Mêmes règles que pour le pilote : remise à zéro chaque saison, GP strictement antérieurs uniquement
+    team_gp['team_quali_pos_avg'] = team_gp.groupby(['Team', 'Season'])['Position'].transform(
+        lambda positions: positions.shift(1).rolling(HISTORY_WINDOW, min_periods=1).mean())
+    return team_gp[['Team', 'Date', 'team_quali_pos_avg']]
+
+
+def season_positions_before(before_date):
+    """Positions en qualification de la saison de before_date (AAAA-MM-JJ), sur les GP strictement antérieurs."""
     gp_dates = {gp: get_gp_date(*gp) for gp in discover_gps()}
     positions = load_quali_positions(gp_dates)
-    positions = positions[positions['Date'] < before_date]
+    return positions[(positions['Date'] < before_date) & (positions['Season'] == int(before_date[:4]))]
+
+
+def current_driver_form(before_date):
+    """Même feature que build_driver_history, pour un GP sans résultats."""
+    positions = season_positions_before(before_date)
     form = positions.groupby('Driver')['Position'].apply(lambda p: p.tail(HISTORY_WINDOW).mean())
     return form.rename('driver_quali_pos_avg').reset_index()
+
+
+def current_team_form(before_date):
+    """Même feature que build_team_history, pour un GP sans résultats."""
+    team_gp = season_positions_before(before_date).groupby(['Team', 'Date'], as_index=False)['Position'].mean().sort_values('Date')
+    form = team_gp.groupby('Team')['Position'].apply(lambda p: p.tail(HISTORY_WINDOW).mean())
+    return form.rename('team_quali_pos_avg').reset_index()
 
 
 def build_dataset():
@@ -169,6 +205,7 @@ def build_dataset():
     DS = pd.concat(datasets, ignore_index=True)
     # Historique du pilote (NaN pour sa toute première qualification du dataset)
     DS = DS.merge(build_driver_history(gp_dates), on=['Driver', 'Date'], how='left')
+    DS = DS.merge(build_team_history(gp_dates), on=['Team', 'Date'], how='left')
     DS.sort_values('Date', inplace=True)
     DS.to_csv(os.path.join(processed_dir, f"F1_features_dataset_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"), index=False)
     print(f"\n ===== Dataset built with {len(DS)} rows across {len(datasets)} Grand Prix and saved to {processed_dir}. =====")

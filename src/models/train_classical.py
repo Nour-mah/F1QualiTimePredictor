@@ -19,6 +19,7 @@ FEATURE_GROUPS = {
     'compound': lambda c: c.endswith('_compound'),      # composé du meilleur tour (0=soft ... 4=wet)
     'laps': lambda c: c.endswith('_laps_ratio'),        # tours IsAccurate / max de la session
     'history': lambda c: c.startswith('driver_quali_'),  # position moyenne du pilote sur ses qualifications précédentes
+    'team': lambda c: c.startswith('team_quali_'),       # position moyenne des pilotes de l'équipe sur les GP précédents
 }
 
 # Paramètres de la validation croisée temporelle (par paquets de GP)

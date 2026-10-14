@@ -227,6 +227,7 @@ data/cache/
 # === Données (en attendant DVC) ===
 data/raw/
 data/processed/
+data/predictions/
 
 # === MLflow ===
 mlruns/
