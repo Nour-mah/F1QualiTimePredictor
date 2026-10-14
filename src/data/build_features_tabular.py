@@ -40,7 +40,8 @@ def load_session_laps(year, gp_name, session_name):
 
     return out
 
-def build_gp_features(year, gp_name):
+def build_fp_features(year, gp_name):
+    """Features des essais libres de tous les pilotes ayant au moins 2 séances valides (None si moins de 2 séances disponibles)."""
     sessions = {}
     for session_name in ['FP1', 'FP2', 'FP3']:
         sessions[session_name] = load_session_laps(year, gp_name, session_name)
@@ -59,6 +60,14 @@ def build_gp_features(year, gp_name):
     # Les valeurs manquantes restent NaN (XGBoost les gère nativement)
     gap_cols = [c for c in df_practice.columns if c.endswith('_gap_to_best_pct')]
     df_practice = df_practice[df_practice[gap_cols].notna().sum(axis=1) >= 2]
+
+    return df_practice.reset_index()
+
+def build_gp_features(year, gp_name):
+    """Features des essais libres + cibles (position et écart au pole) pour le top 10 officiel de la qualification."""
+    df_practice = build_fp_features(year, gp_name)
+    if df_practice is None:
+        return None
 
     # Charger le CSV de résultats de quali
     safe_event = gp_name.replace(" ", "_")
@@ -100,38 +109,46 @@ def discover_gps():
     return gps
 
 def get_gp_date(year, gp_name):
-    # Charger le CSV de résultats de quali
+    """Date du GP au format AAAA-MM-JJ : celle de la qualification, à défaut celle de la dernière séance d'essais disponible (GP à venir)."""
     safe_event = gp_name.replace(" ", "_")
-    results_filename = f"{year}_{safe_event}_Q_laps.csv"
-    results_path = os.path.join(raw_dir, results_filename)
-
-    if not os.path.exists(results_path):
-        return None
-
-    df_results = pd.read_csv(results_path)
-
-    # Récupérer la date de l'événement
-    if 'LapStartDate' in df_results.columns:
-        timestamp = df_results['LapStartDate'].iloc[0]
-        return timestamp.split(' ')[0]  # Retourne uniquement la date
-    else:
-        return None
+    for session_name in ['Q', 'FP3', 'FP2', 'FP1']:
+        laps_path = os.path.join(raw_dir, f"{year}_{safe_event}_{session_name}_laps.csv")
+        if not os.path.exists(laps_path):
+            continue
+        timestamps = pd.read_csv(laps_path, usecols=['LapStartDate'])['LapStartDate'].dropna()
+        if not timestamps.empty:
+            return timestamps.iloc[0].split(' ')[0]
+    return None
 
 
-def build_driver_history(gp_dates):
-    """Position moyenne de chaque pilote sur ses HISTORY_WINDOW qualifications précédentes (tous les pilotes, pas seulement le top 10)."""
+def load_quali_positions(gp_dates):
+    """Position en qualification de tous les pilotes (pas seulement le top 10) pour chaque GP, triée par date."""
     all_results = []
     for (year, gp_name), date in gp_dates.items():
         results = pd.read_csv(os.path.join(raw_dir, f"{year}_{gp_name.replace(' ', '_')}_Q_results.csv"))
         results = results[['Abbreviation', 'Position']].rename(columns={'Abbreviation': 'Driver'})
         results['Date'] = date
         all_results.append(results)
-    history = pd.concat(all_results, ignore_index=True).sort_values('Date')
+    return pd.concat(all_results, ignore_index=True).sort_values('Date')
+
+
+def build_driver_history(gp_dates):
+    """Position moyenne de chaque pilote sur ses HISTORY_WINDOW qualifications précédentes."""
+    history = load_quali_positions(gp_dates)
 
     # shift(1) : uniquement les GP strictement antérieurs, sinon la position à prédire fuit dans la feature
     history['driver_quali_pos_avg'] = history.groupby('Driver')['Position'].transform(
         lambda positions: positions.shift(1).rolling(HISTORY_WINDOW, min_periods=1).mean())
     return history[['Driver', 'Date', 'driver_quali_pos_avg']]
+
+
+def current_driver_form(before_date):
+    """Même feature que build_driver_history, pour un GP sans résultats : moyenne des HISTORY_WINDOW dernières qualifications avant before_date."""
+    gp_dates = {gp: get_gp_date(*gp) for gp in discover_gps()}
+    positions = load_quali_positions(gp_dates)
+    positions = positions[positions['Date'] < before_date]
+    form = positions.groupby('Driver')['Position'].apply(lambda p: p.tail(HISTORY_WINDOW).mean())
+    return form.rename('driver_quali_pos_avg').reset_index()
 
 
 def build_dataset():

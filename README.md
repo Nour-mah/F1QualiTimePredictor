@@ -20,31 +20,47 @@ For each Grand Prix, the pipeline:
 
 Drivers need at least 2 valid FP sessions. Missing values are left as `NaN` (no imputation; XGBoost handles them natively).
 
-Data window: 2022–2026 seasons, conventional (non-sprint) weekends only (78 Grands Prix, 780 rows).
+Data window: 2022–2026 seasons, conventional (non-sprint) weekends only (82 Grands Prix, 820 rows).
 
 ## Modeling approach
 
 - **Learning to rank.** The main task is to order the 10 drivers within each Grand Prix, so the model is an `XGBRanker` trained with one group per Grand Prix. It is scored with the **Spearman correlation** between predicted and actual order, computed per Grand Prix and averaged (1 = perfect order).
 - **A strong reference.** The model is compared to the order of the last free-practice session (FP3, falling back on FP2 then FP1). It is a much more demanding baseline than predicting a constant.
-- **Temporal validation.** No random split: it would leak information between drivers of the same Grand Prix and between past and future. Evaluation uses a **time-series cross-validation** in blocks of 10 Grands Prix (expanding training window, 5 folds).
+- **Temporal validation.** No random split: it would leak information between drivers of the same Grand Prix and between past and future. Evaluation uses a **time-series cross-validation** in blocks of 10 Grands Prix (expanding training window, 6 folds).
 - **Relative features.** Absolute lap times depend on the circuit, so the model is fed gaps relative to the session's best lap.
 - **A deliberately simple model.** With ~700 rows, default XGBoost parameters (depth 6) overfit and score below the reference. The model uses depth-1 trees, 100 estimators and a 0.05 learning rate.
 
-### Current results (5-fold temporal CV)
+### Current results (6-fold temporal CV)
 
 Ranking the top 10 (Spearman, higher is better):
 
 | Model | Spearman (mean ± std) |
 |---|---|
-| Reference: free-practice order | 0.604 ± 0.077 |
-| XGBRanker, FP gaps only | 0.606 ± 0.063 |
-| XGBRanker, driver history only | 0.578 ± 0.065 |
-| **XGBRanker, FP gaps + driver history** | **0.651 ± 0.042** |
-| + tyre compound + laps ratio | 0.649 ± 0.042 |
+| Reference: free-practice order | 0.544 ± 0.110 |
+| XGBRanker, FP gaps only | 0.578 ± 0.086 |
+| XGBRanker, driver history only | 0.536 ± 0.114 |
+| **XGBRanker, FP gaps + driver history** | **0.620 ± 0.062** |
+| + tyre compound + laps ratio | 0.617 ± 0.069 |
 
-Free-practice pace and recent form complement each other: combined, they beat the free-practice order on average and are more consistent across folds. The gain comes mostly from the two oldest folds; on the three most recent ones the reference stays slightly ahead, so the improvement is real but modest. Hyperparameters were chosen on these same folds, which makes the scores slightly optimistic.
+Free-practice pace and recent form complement each other: combined, they beat the free-practice order on average and are more consistent across folds. The model is ahead on 4 of the 6 folds; on the most recent one the reference stays ahead (0.669 vs 0.635), so the improvement is real but modest. Hyperparameters were chosen on these same folds, which makes the scores slightly optimistic.
 
-Predicting the gap to pole (RMSE in percentage points, lower is better): 0.805 with FP gaps + driver history, against 0.910 for a naive model predicting the training mean.
+Predicting the gap to pole (RMSE in percentage points, lower is better): 0.797 with FP gaps + driver history, against 0.902 for a naive model predicting the training mean.
+
+## Predicting an upcoming Grand Prix
+
+`src/models/predict.py` predicts the qualifying top 10 of a Grand Prix once its free-practice sessions are available (between FP3 and qualifying). It trains the ranker on all Grands Prix strictly before the target one, ranks the whole grid and saves the prediction in `data/predictions/`. If the Grand Prix has already been run, it also shows the actual positions, which allows replaying past Grands Prix without leakage.
+
+Replays of recent Grands Prix (model trained only on earlier ones):
+
+| 2026 Grand Prix | Predicted top-10 drivers actually in the top 10 | Spearman on the predicted top 10 |
+|---|---|---|
+| Bahrain | 9 / 10 | 0.87 |
+| Italy | 8 / 10 | 0.72 |
+| Azerbaijan | 8 / 10 | 0.19 |
+
+The model reliably finds who makes Q3, but the order within the top 10 varies a lot from one Grand Prix to another.
+
+Known limitation: the ranker is trained on top-10 drivers only, while the prediction ranks the whole grid. Training on the full grid is the next modeling step.
 
 ### What did not work
 
@@ -57,7 +73,8 @@ Predicting the gap to pole (RMSE in percentage points, lower is better): 0.805 w
 - [x] Data collection from FastF1 (`src/data/fetch_fastf1.py`)
 - [x] Per-GP feature engineering + full dataset assembly (`src/data/build_features_tabular.py`)
 - [x] Ranking model with temporal cross-validation and selectable feature groups (`src/models/train_classical.py`)
-- [ ] Improve the model (teammate-relative features, more seasons)
+- [x] Prediction of an upcoming Grand Prix (`src/models/predict.py`)
+- [ ] Improve the model (full-grid training, teammate-relative features, more seasons)
 - [ ] Tensor-based pipeline for a PyTorch model (Phase 2)
 - [ ] Experiment tracking (MLflow)
 - [ ] Serving API
@@ -78,20 +95,22 @@ src/
 │   ├── fetch_fastf1.py           # Pulls raw session data from FastF1
 │   └── build_features_tabular.py # Builds the per-GP tabular dataset
 └── models/
-    └── train_classical.py        # XGBoost ranker/regressor + temporal cross-validation
+    ├── train_classical.py        # XGBoost ranker/regressor + temporal cross-validation
+    └── predict.py                # Predicts the qualifying top 10 of a Grand Prix from its free practice
 
-data/            # raw/processed data, gitignored (not versioned in git)
+data/            # raw/processed data, gitignored (not versioned in git); predictions in data/predictions/
 ```
 
 ## Running the pipeline
 
 ```bash
 cd src/data
-python fetch_fastf1.py            # populates data/raw/ (long-running, respects FastF1 API rate limits)
+python fetch_fastf1.py            # populates data/raw/, skipping sessions already downloaded and weekends not started yet
 python build_features_tabular.py  # builds data/processed/tabular/F1_features_dataset_<timestamp>.csv
 
 cd ../models
 python train_classical.py                                # ranking of the top 10, features: gap + history
 python train_classical.py --features gap history compound laps   # feature groups: gap, history, compound, laps
 python train_classical.py --target gap                   # secondary task: regression of the gap to pole
+python predict.py --year 2026 --gp "United States Grand Prix"   # predicted top 10 (run fetch_fastf1.py after FP3 first)
 ```

@@ -1,52 +1,74 @@
 import os
 import time
+import datetime
 import fastf1
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # Activation du cache
-cache_dir = '../../data/cache'
-if not os.path.exists(cache_dir):
-	os.makedirs(cache_dir)
+cache_dir = os.path.join(BASE_DIR, '../../data/cache')
+os.makedirs(cache_dir, exist_ok=True)
 fastf1.Cache.enable_cache(cache_dir)
 
 # Exportation des données csv
-export_dir = '../../data/raw'
-if not os.path.exists(export_dir):
-	os.makedirs(export_dir)
+export_dir = os.path.join(BASE_DIR, '../../data/raw')
+os.makedirs(export_dir, exist_ok=True)
+
+
+def session_files(year, event, session_name):
+    """Chemins des CSV attendus pour une session (les résultats n'existent que pour la qualification)."""
+    filename_base = f"{year}_{event.replace(' ', '_')}_{session_name}"
+    files = {
+        'laps': os.path.join(export_dir, f"{filename_base}_laps.csv"),
+        'weather': os.path.join(export_dir, f"{filename_base}_weather.csv"),
+    }
+    if session_name == 'Q':
+        files['results'] = os.path.join(export_dir, f"{filename_base}_results.csv")
+    return files
 
 
 def session_loader():
     """
-    Exporte toutes les sessions de FP1, FP2, FP3 et Q pour les années 2022 à 2026 (pour le format classique de weekend)
-    dans des fichiers CSV. situés dans le dossier data/raw.
+    Exporte les sessions FP1, FP2, FP3 et Q des années 2022 à 2026 (format classique de weekend)
+    dans des fichiers CSV situés dans le dossier data/raw.
+    Les sessions déjà téléchargées et les weekends pas encore commencés sont ignorés.
     """
-    for year in range(2022, 2026):
+    today = datetime.datetime.now()
+    downloaded = 0
+    for year in range(2022, 2027):
         schedule = fastf1.get_event_schedule(year)
         for row in schedule.itertuples():
             event = row.EventName
-            if row.EventFormat == 'conventional':
-                for session_name in ['FP1', 'FP2', 'FP3', 'Q']:
-                    try:
-                        session = fastf1.get_session(year, event, session_name)
-                        session.load(telemetry=True, weather=True, laps=True, messages=False)
+            if row.EventFormat != 'conventional':
+                continue
+            # EventDate = jour de la course ; les essais libres commencent 2 jours avant
+            if row.EventDate - datetime.timedelta(days=2) > today:
+                continue
 
-                        safe_event = event.replace(" ", "_")
-                        filename_base = f"{year}_{safe_event}_{session_name}"
+            for session_name in ['FP1', 'FP2', 'FP3', 'Q']:
+                files = session_files(year, event, session_name)
+                if all(os.path.exists(path) for path in files.values()):
+                    continue
 
-                        laps_path = os.path.join(export_dir, f"{filename_base}_laps.csv")
-                        session.laps.to_csv(laps_path, index=False)
+                try:
+                    session = fastf1.get_session(year, event, session_name)
+                    session.load(telemetry=True, weather=True, laps=True, messages=False)
 
-                        weather_path = os.path.join(export_dir, f"{filename_base}_weather.csv")
-                        session.weather_data.to_csv(weather_path, index=False)
-                        
-                        if session_name == 'Q':
-                            results_path = os.path.join(export_dir, f"{filename_base}_results.csv")
-                            session.results.to_csv(results_path, index=False)
+                    session.laps.to_csv(files['laps'], index=False)
+                    session.weather_data.to_csv(files['weather'], index=False)
+                    if session_name == 'Q':
+                        session.results.to_csv(files['results'], index=False)
 
-                        time.sleep(1.5)
-                    except fastf1.exceptions.DataNotLoadedError:
-                        print("DONNÉES INDISPONIBLES (Session future ou annulée)")
-                    except Exception as e:
-                        print(f"ERREUR : {e}")
+                    downloaded += 1
+                    print(f"TÉLÉCHARGÉ : {year} {event} {session_name}")
+                    time.sleep(1.5)
+                except fastf1.exceptions.DataNotLoadedError:
+                    print(f"DONNÉES INDISPONIBLES : {year} {event} {session_name} (session pas encore disputée ou annulée)")
+                except Exception as e:
+                    print(f"ERREUR : {year} {event} {session_name} : {e}")
+
+    print(f"\n{downloaded} session(s) téléchargée(s).")
+
 
 if __name__ == "__main__":
     session_loader()
