@@ -2,6 +2,8 @@ import os
 import argparse
 import numpy as np
 import pandas as pd
+import mlflow
+import mlflow.xgboost
 from scipy.stats import spearmanr
 from sklearn.metrics import root_mean_squared_error
 from xgboost import XGBRanker, XGBRegressor
@@ -9,6 +11,11 @@ from xgboost import XGBRanker, XGBRegressor
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "../.."))
 data_folder_path = os.path.join(PROJECT_ROOT, "data/processed/tabular")
+
+# MLflow : paramètres et métriques dans une base SQLite, fichiers (modèles, JSON) dans mlartifacts/
+MLFLOW_TRACKING_URI = "sqlite:///" + os.path.join(PROJECT_ROOT, "mlflow.db")
+MLFLOW_ARTIFACT_LOCATION = "file:" + os.path.join(PROJECT_ROOT, "mlartifacts")
+MLFLOW_EXPERIMENT = "f1-quali"
 
 GAP_TARGET = 'gap_to_pole_pct'
 POSITION_TARGET = 'quali_position'
@@ -48,13 +55,26 @@ def select_features(df, groups):
     return [c for c in df.columns if any(FEATURE_GROUPS[g](c) for g in groups)]
 
 
+def fit_regressor(train, features):
+    """Régression de l'écart au pole (les pilotes du top 10 sans temps en Q3 n'ont pas d'écart, donc sont exclus)."""
+    train = train.dropna(subset=[GAP_TARGET])
+    return XGBRegressor(**XGB_PARAMS).fit(train[features], train[GAP_TARGET])
+
+
+def fit_ranker(train, features):
+    """Ranking des pilotes au sein de chaque GP."""
+    # XGBRanker : un label plus grand = meilleur, donc on inverse la position (P1 -> 10, P10 -> 1).
+    # qid indique à quel GP appartient chaque ligne (les lignes d'un même GP doivent être contiguës).
+    model = XGBRanker(objective='rank:pairwise', **XGB_PARAMS)
+    return model.fit(train[features], 11 - train[POSITION_TARGET], qid=train['gp_id'])
+
+
 def evaluate_gap(train, test, features):
-    """Régression de l'écart au pole. Renvoie (RMSE XGBoost, RMSE naïf = moyenne du train)."""
-    # Les pilotes du top 10 sans temps en Q3 n'ont pas d'écart au pole
-    train, test = train.dropna(subset=[GAP_TARGET]), test.dropna(subset=[GAP_TARGET])
-    model = XGBRegressor(**XGB_PARAMS).fit(train[features], train[GAP_TARGET])
+    """Renvoie (RMSE XGBoost, RMSE naïf = moyenne du train)."""
+    model = fit_regressor(train, features)
+    test = test.dropna(subset=[GAP_TARGET])
     rmse_model = root_mean_squared_error(test[GAP_TARGET], model.predict(test[features]))
-    rmse_naive = root_mean_squared_error(test[GAP_TARGET], np.full(len(test), train[GAP_TARGET].mean()))
+    rmse_naive = root_mean_squared_error(test[GAP_TARGET], np.full(len(test), train[GAP_TARGET].dropna().mean()))
     return rmse_model, rmse_naive
 
 
@@ -68,11 +88,8 @@ def mean_spearman(df, score_col, ascending):
 
 
 def evaluate_position(train, test, features):
-    """Ranking des pilotes au sein de chaque GP. Renvoie (Spearman XGBRanker, Spearman référence = ordre des FP)."""
-    # XGBRanker : un label plus grand = meilleur, donc on inverse la position (P1 -> 10, P10 -> 1).
-    # qid indique à quel GP appartient chaque ligne (les lignes d'un même GP doivent être contiguës).
-    model = XGBRanker(objective='rank:pairwise', **XGB_PARAMS)
-    model.fit(train[features], 11 - train[POSITION_TARGET], qid=train['gp_id'])
+    """Renvoie (Spearman XGBRanker, Spearman référence = ordre des FP)."""
+    model = fit_ranker(train, features)
 
     # Référence : classement de la FP3, à défaut celui de la FP2 puis de la FP1 si le pilote n'a pas roulé
     fp_reference = test[['FP3_gap_to_best_pct', 'FP2_gap_to_best_pct', 'FP1_gap_to_best_pct']].bfill(axis=1).iloc[:, 0]
@@ -80,16 +97,18 @@ def evaluate_position(train, test, features):
     return mean_spearman(test, 'score', ascending=False), mean_spearman(test, 'fp_reference', ascending=True)
 
 
-# cible -> (fonction d'évaluation, nom de la métrique, nom du modèle, nom de la référence)
 TARGETS = {
-    'position': (evaluate_position, 'Spearman', 'XGBRanker', 'ordre FP'),
-    'gap': (evaluate_gap, 'RMSE', 'XGBoost', 'naïf'),
+    'position': {'fit': fit_ranker, 'evaluate': evaluate_position, 'metric': 'spearman', 'higher_is_better': True,
+                 'model_name': 'XGBRanker', 'reference_name': 'ordre FP'},
+    'gap': {'fit': fit_regressor, 'evaluate': evaluate_gap, 'metric': 'rmse', 'higher_is_better': False,
+            'model_name': 'XGBoost', 'reference_name': 'naïf'},
 }
 
 
 def run_cv(df, features, target):
     """Validation croisée temporelle, fenêtre "expanding" : le train = tous les GP antérieurs au bloc de test."""
-    evaluate, metric, model_name, reference_name = TARGETS[target]
+    config = TARGETS[target]
+    metric, model_name, reference_name = config['metric'], config['model_name'], config['reference_name']
     n_gps = df['gp_id'].nunique()
     test_starts = list(range(n_gps - BLOCK_SIZE, MIN_TRAIN_GPS - 1, -BLOCK_SIZE))[::-1]
 
@@ -98,14 +117,27 @@ def run_cv(df, features, target):
         train = df[df['gp_id'] < test_start]
         test = df[(df['gp_id'] >= test_start) & (df['gp_id'] < test_start + BLOCK_SIZE)]
 
-        score_model, score_reference = evaluate(train, test, features)
+        score_model, score_reference = config['evaluate'](train, test, features)
         results.append((score_model, score_reference))
+        mlflow.log_metric(f"fold_{metric}_model", score_model, step=fold)
+        mlflow.log_metric(f"fold_{metric}_reference", score_reference, step=fold)
         print(f"Fold {fold}: train={test_start} GP, test=GP {test_start + 1}-{test_start + BLOCK_SIZE} "
               f"| {metric} {model_name}={score_model:.4f} | {metric} {reference_name}={score_reference:.4f}")
 
     results = np.array(results)
-    print(f"\n{model_name} : {results[:, 0].mean():.4f} ± {results[:, 0].std():.4f}")
-    print(f"{reference_name} : {results[:, 1].mean():.4f} ± {results[:, 1].std():.4f}")
+    model_mean, reference_mean = results[:, 0].mean(), results[:, 1].mean()
+    # Gain positif = le modèle fait mieux que la référence, quel que soit le sens de la métrique
+    gain = model_mean - reference_mean if config['higher_is_better'] else reference_mean - model_mean
+    mlflow.log_metrics({
+        f"cv_{metric}_model_mean": model_mean,
+        f"cv_{metric}_model_std": results[:, 0].std(),
+        f"cv_{metric}_reference_mean": reference_mean,
+        f"cv_{metric}_reference_std": results[:, 1].std(),
+        "cv_gain_vs_reference": gain,
+    })
+    print(f"\n{model_name} : {model_mean:.4f} ± {results[:, 0].std():.4f}")
+    print(f"{reference_name} : {reference_mean:.4f} ± {results[:, 1].std():.4f}")
+    print(f"Gain par rapport à la référence : {gain:+.4f}")
 
 
 def main(groups, target):
@@ -116,7 +148,33 @@ def main(groups, target):
     df['gp_id'] = df.groupby('Date').ngroup()
 
     print(f"Dataset : {os.path.basename(data_path)} | cible : {target} | features ({len(features)}) : {features}\n")
-    run_cv(df, features, target)
+
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    # Emplacement des artefacts fixé explicitement, sinon MLflow le place par rapport au dossier d'exécution
+    if mlflow.get_experiment_by_name(MLFLOW_EXPERIMENT) is None:
+        mlflow.create_experiment(MLFLOW_EXPERIMENT, artifact_location=MLFLOW_ARTIFACT_LOCATION)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+
+    with mlflow.start_run(run_name=f"{target}:{'+'.join(groups)}") as run:
+        mlflow.log_params({
+            'target': target,
+            'feature_groups': ",".join(groups),
+            'dataset': os.path.basename(data_path),
+            'n_gps': df['gp_id'].nunique(),
+            'n_rows': len(df),
+            'block_size': BLOCK_SIZE,
+            'min_train_gps': MIN_TRAIN_GPS,
+            **XGB_PARAMS,
+        })
+        mlflow.log_dict({'features': features}, "features.json")
+
+        run_cv(df, features, target)
+
+        # Modèle final entraîné sur tous les GP : celui qu'un script de prédiction ou une API pourra recharger
+        final_model = TARGETS[target]['fit'](df, features)
+        mlflow.log_param('objective', final_model.get_xgb_params()['objective'])
+        mlflow.xgboost.log_model(final_model, name="model", input_example=df[features].head(5))
+        print(f"\nRun MLflow enregistré : {run.info.run_id}")
 
 
 if __name__ == "__main__":
