@@ -16,6 +16,8 @@ data_folder_path = os.path.join(PROJECT_ROOT, "data/processed/tabular")
 MLFLOW_TRACKING_URI = "sqlite:///" + os.path.join(PROJECT_ROOT, "mlflow.db")
 MLFLOW_ARTIFACT_LOCATION = "file:" + os.path.join(PROJECT_ROOT, "mlartifacts")
 MLFLOW_EXPERIMENT = "f1-quali"
+# Alias du registre de modèles désignant la version utilisée par predict.py ; on le déplace explicitement avec --promote
+CHAMPION_ALIAS = "champion"
 
 GAP_TARGET = 'gap_to_pole_pct'
 POSITION_TARGET = 'quali_position'
@@ -99,9 +101,9 @@ def evaluate_position(train, test, features):
 
 TARGETS = {
     'position': {'fit': fit_ranker, 'evaluate': evaluate_position, 'metric': 'spearman', 'higher_is_better': True,
-                 'model_name': 'XGBRanker', 'reference_name': 'ordre FP'},
+                 'model_name': 'XGBRanker', 'reference_name': 'ordre FP', 'registered_model': 'f1-quali-ranker'},
     'gap': {'fit': fit_regressor, 'evaluate': evaluate_gap, 'metric': 'rmse', 'higher_is_better': False,
-            'model_name': 'XGBoost', 'reference_name': 'naïf'},
+            'model_name': 'XGBoost', 'reference_name': 'naïf', 'registered_model': 'f1-quali-gap-regressor'},
 }
 
 
@@ -140,7 +142,7 @@ def run_cv(df, features, target):
     print(f"Gain par rapport à la référence : {gain:+.4f}")
 
 
-def main(groups, target):
+def main(groups, target, promote):
     df, data_path = load_data()
     features = select_features(df, groups)
     # gp_id = numéro du GP dans l'ordre chronologique (0 = le plus ancien)
@@ -162,6 +164,8 @@ def main(groups, target):
             'dataset': os.path.basename(data_path),
             'n_gps': df['gp_id'].nunique(),
             'n_rows': len(df),
+            # Dernier GP vu par le modèle final : predict.py ne l'utilise que pour des GP postérieurs (sinon fuite)
+            'train_end_date': df['Date'].max().strftime('%Y-%m-%d'),
             'block_size': BLOCK_SIZE,
             'min_train_gps': MIN_TRAIN_GPS,
             **XGB_PARAMS,
@@ -173,8 +177,16 @@ def main(groups, target):
         # Modèle final entraîné sur tous les GP : celui qu'un script de prédiction ou une API pourra recharger
         final_model = TARGETS[target]['fit'](df, features)
         mlflow.log_param('objective', final_model.get_xgb_params()['objective'])
-        mlflow.xgboost.log_model(final_model, name="model", input_example=df[features].head(5))
-        print(f"\nRun MLflow enregistré : {run.info.run_id}")
+        # Chaque run ajoute une version au registre de modèles ; seul l'alias "champion" décide de celle utilisée en prédiction
+        registered_model = TARGETS[target]['registered_model']
+        model_info = mlflow.xgboost.log_model(final_model, name="model", input_example=df[features].head(5),
+                                              registered_model_name=registered_model)
+        version = model_info.registered_model_version
+        print(f"\nRun MLflow enregistré : {run.info.run_id} | modèle {registered_model} version {version}")
+
+        if promote:
+            mlflow.MlflowClient().set_registered_model_alias(registered_model, CHAMPION_ALIAS, version)
+            print(f"Version {version} promue : alias '{CHAMPION_ALIAS}'")
 
 
 if __name__ == "__main__":
@@ -183,5 +195,7 @@ if __name__ == "__main__":
                         help="position : classement en qualification (ranking, Spearman) ; gap : écart au pole (régression, RMSE)")
     parser.add_argument('--features', nargs='+', default=['gap', 'history'], choices=sorted(FEATURE_GROUPS),
                         help="Groupes de features à utiliser (défaut : gap history)")
+    parser.add_argument('--promote', action='store_true',
+                        help=f"Désigne le modèle de ce run comme '{CHAMPION_ALIAS}', celui que predict.py charge")
     args = parser.parse_args()
-    main(args.features, args.target)
+    main(args.features, args.target, args.promote)
