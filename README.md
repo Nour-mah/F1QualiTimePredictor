@@ -111,6 +111,28 @@ Documentation interactive : http://127.0.0.1:8000/docs
 
 L'API ne télécharge pas les données elle-même : la collecte (`fetch_fastf1.py`) reste une tâche séparée du pipeline. Un GP sans essais libres en local renvoie une erreur 404 qui l'indique.
 
+## Docker
+
+Toute l'application tourne dans des conteneurs, sans rien installer d'autre que Docker :
+
+| Service | Rôle | Port |
+|---|---|---|
+| `mlflow` | Serveur MLflow : runs, registre de modèles et fichiers des modèles, conservés dans le volume `mlflow-data` | 5000 |
+| `api` | API de prédiction, qui charge le modèle `champion` depuis le serveur MLflow | 8000 |
+| `pipeline` | Conteneur ponctuel pour la collecte, la construction du dataset, l'entraînement et la prédiction | — |
+
+Le dossier `data/` de la machine est partagé avec les conteneurs. Les conteneurs ne dépendent d'aucun chemin de la machine hôte pour les modèles : ils passent tous par le serveur MLflow (`MLFLOW_TRACKING_URI=http://mlflow:5000`).
+
+```bash
+docker compose up -d --build                                                         # serveur MLflow + API
+docker compose run --rm pipeline python src/data/fetch_fastf1.py                     # collecte
+docker compose run --rm pipeline python src/data/build_features_tabular.py           # dataset
+docker compose run --rm pipeline python src/models/train_classical.py --promote      # entraînement + champion
+docker compose run --rm pipeline python src/models/predict.py --year 2026 --gp "United States Grand Prix"
+```
+
+API : http://localhost:8000/docs · Interface MLflow : http://localhost:5000
+
 ## Avancement
 
 - [x] Collecte des données FastF1 (`src/data/fetch_fastf1.py`)
@@ -122,13 +144,13 @@ L'API ne télécharge pas les données elle-même : la collecte (`fetch_fastf1.p
 - [x] Suivi des expériences et registre de modèles (MLflow)
 - [x] Tests (pytest, données fabriquées)
 - [x] API de prédiction (FastAPI)
-- [ ] Docker / docker-compose
+- [x] Docker / docker-compose (serveur MLflow, API, pipeline)
 - [ ] CI/CD
 - [ ] Versioning des données (DVC)
 
 ## Outils
 
-Python, pandas, FastF1, scikit-learn, SciPy, XGBoost, MLflow, FastAPI, pytest. Prévus : PyTorch, Docker, DVC.
+Python, pandas, FastF1, scikit-learn, SciPy, XGBoost, MLflow, FastAPI, Docker, pytest. Prévus : PyTorch, DVC.
 
 ## Structure du dépôt
 
@@ -143,6 +165,7 @@ src/
 └── api/
     └── main.py                   # API FastAPI (health, grands-prix, predict)
 tests/           # tests pytest sur des données fabriquées (ne dépendent pas de data/)
+Dockerfile, docker-compose.yml   # image et services (MLflow, API, pipeline)
 
 data/            # données brutes, traitées et prédictions, exclues de git
 mlflow.db        # base MLflow (runs, registre de modèles), exclue de git

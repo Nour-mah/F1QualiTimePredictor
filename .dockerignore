@@ -1,0 +1,12 @@
+# Seuls requirements.txt et src/ sont copiés dans l'image ; on exclut le reste du contexte de build
+# (data/cache pèse plusieurs Go : sans cette exclusion, chaque build l'enverrait à Docker)
+data/
+mlflow.db
+mlartifacts/
+mlruns/
+notebooks/
+tests/
+.git/
+**/__pycache__/
+**/.DS_Store
+*.png

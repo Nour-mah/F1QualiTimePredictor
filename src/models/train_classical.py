@@ -12,8 +12,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "../.."))
 data_folder_path = os.path.join(PROJECT_ROOT, "data/processed/tabular")
 
-# MLflow : paramètres et métriques dans une base SQLite, fichiers (modèles, JSON) dans mlartifacts/
-MLFLOW_TRACKING_URI = "sqlite:///" + os.path.join(PROJECT_ROOT, "mlflow.db")
+# MLflow : en local, paramètres et métriques dans une base SQLite et fichiers (modèles, JSON) dans mlartifacts/.
+# Avec Docker, la variable d'environnement MLFLOW_TRACKING_URI pointe vers le serveur MLflow (http://mlflow:5000),
+# qui stocke lui-même les fichiers : les conteneurs ne dépendent alors d'aucun chemin de la machine hôte.
+LOCAL_TRACKING_URI = "sqlite:///" + os.path.join(PROJECT_ROOT, "mlflow.db")
+MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", LOCAL_TRACKING_URI)
 MLFLOW_ARTIFACT_LOCATION = "file:" + os.path.join(PROJECT_ROOT, "mlartifacts")
 MLFLOW_EXPERIMENT = "f1-quali"
 # Alias du registre de modèles désignant la version utilisée par predict.py ; on le déplace explicitement avec --promote
@@ -158,7 +161,9 @@ def main(groups, target, promote):
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     # Emplacement des artefacts fixé explicitement, sinon MLflow le place par rapport au dossier d'exécution
     if mlflow.get_experiment_by_name(MLFLOW_EXPERIMENT) is None:
-        mlflow.create_experiment(MLFLOW_EXPERIMENT, artifact_location=MLFLOW_ARTIFACT_LOCATION)
+        # Avec un serveur MLflow, c'est lui qui choisit où stocker les fichiers
+        artifact_location = MLFLOW_ARTIFACT_LOCATION if MLFLOW_TRACKING_URI == LOCAL_TRACKING_URI else None
+        mlflow.create_experiment(MLFLOW_EXPERIMENT, artifact_location=artifact_location)
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
 
     with mlflow.start_run(run_name=f"{target}:{'+'.join(groups)}") as run:

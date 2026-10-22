@@ -1,0 +1,54 @@
+# Lancer le serveur MLflow et l'API :        docker compose up -d --build
+# Étapes du pipeline (conteneurs ponctuels) :
+#   docker compose run --rm pipeline python src/data/fetch_fastf1.py
+#   docker compose run --rm pipeline python src/data/build_features_tabular.py
+#   docker compose run --rm pipeline python src/models/train_classical.py --promote
+#   docker compose run --rm pipeline python src/models/predict.py --year 2026 --gp "United States Grand Prix"
+
+x-app: &app
+  build: .
+  image: f1-quali-predictor
+  environment:
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    # Le dépôt git n'est pas copié dans l'image : MLflow ne peut pas lire le commit, on évite l'avertissement
+    GIT_PYTHON_REFRESH: quiet
+  volumes:
+    # Données de l'hôte (brutes, cache FastF1, dataset, prédictions) : partagées et conservées hors des conteneurs
+    - ./data:/app/data
+  depends_on:
+    mlflow:
+      condition: service_healthy
+
+services:
+  mlflow:
+    image: f1-quali-predictor
+    build: .
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts
+      --allowed-hosts "mlflow:5000,localhost:5000,127.0.0.1:5000"
+    ports:
+      - "5000:5000"
+    volumes:
+      # Volume nommé : l'historique des runs et les modèles survivent à la suppression du conteneur
+      - mlflow-data:/mlflow
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+
+  pipeline:
+    <<: *app
+    # Pas démarré par "docker compose up" : uniquement via "docker compose run"
+    profiles: ["jobs"]
+    command: ["python", "--version"]
+
+volumes:
+  mlflow-data:
