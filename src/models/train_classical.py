@@ -107,15 +107,19 @@ TARGETS = {
 }
 
 
+def temporal_folds(n_gps):
+    """Premiers gp_id des blocs de test, du plus ancien au plus récent. Le dernier bloc finit au dernier GP,
+    et chaque bloc s'entraîne sur au moins MIN_TRAIN_GPS GP antérieurs."""
+    return list(range(n_gps - BLOCK_SIZE, MIN_TRAIN_GPS - 1, -BLOCK_SIZE))[::-1]
+
+
 def run_cv(df, features, target):
     """Validation croisée temporelle, fenêtre "expanding" : le train = tous les GP antérieurs au bloc de test."""
     config = TARGETS[target]
     metric, model_name, reference_name = config['metric'], config['model_name'], config['reference_name']
-    n_gps = df['gp_id'].nunique()
-    test_starts = list(range(n_gps - BLOCK_SIZE, MIN_TRAIN_GPS - 1, -BLOCK_SIZE))[::-1]
 
     results = []
-    for fold, test_start in enumerate(test_starts, start=1):
+    for fold, test_start in enumerate(temporal_folds(df['gp_id'].nunique()), start=1):
         train = df[df['gp_id'] < test_start]
         test = df[(df['gp_id'] >= test_start) & (df['gp_id'] < test_start + BLOCK_SIZE)]
 
