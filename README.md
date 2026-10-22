@@ -93,6 +93,24 @@ Le modèle identifie de façon fiable les pilotes qui accèdent à la Q3, mais l
 
 Limite connue : le modèle est entraîné sur les pilotes du top 10 uniquement, alors que la prédiction classe toute la grille. L'entraînement sur toute la grille est la prochaine étape de modélisation.
 
+## API de prédiction
+
+Une API FastAPI expose les prédictions (`src/api/main.py`). Lancement depuis la racine du projet :
+
+```bash
+uvicorn api.main:app --app-dir src
+```
+
+Documentation interactive : http://127.0.0.1:8000/docs
+
+| Endpoint | Rôle |
+|---|---|
+| `GET /health` | État du service et modèle `champion` utilisé |
+| `GET /grands-prix` | Grands Prix dont les essais libres sont disponibles |
+| `GET /predict?year=2026&grand_prix=United States Grand Prix` | Top 10 et grille complète prédits ; pour un GP déjà couru, résultat réel et évaluation |
+
+L'API ne télécharge pas les données elle-même : la collecte (`fetch_fastf1.py`) reste une tâche séparée du pipeline. Un GP sans essais libres en local renvoie une erreur 404 qui l'indique.
+
 ## Avancement
 
 - [x] Collecte des données FastF1 (`src/data/fetch_fastf1.py`)
@@ -103,14 +121,14 @@ Limite connue : le modèle est entraîné sur les pilotes du top 10 uniquement, 
 - [ ] Pipeline tensoriel pour un modèle PyTorch (phase 2)
 - [x] Suivi des expériences et registre de modèles (MLflow)
 - [x] Tests (pytest, données fabriquées)
-- [ ] API de prédiction
+- [x] API de prédiction (FastAPI)
 - [ ] Docker / docker-compose
 - [ ] CI/CD
 - [ ] Versioning des données (DVC)
 
 ## Outils
 
-Python, pandas, FastF1, scikit-learn, SciPy, XGBoost, MLflow, pytest. Prévus : PyTorch, Docker, DVC.
+Python, pandas, FastF1, scikit-learn, SciPy, XGBoost, MLflow, FastAPI, pytest. Prévus : PyTorch, Docker, DVC.
 
 ## Structure du dépôt
 
@@ -119,9 +137,11 @@ src/
 ├── data/
 │   ├── fetch_fastf1.py           # Récupère les séances depuis FastF1
 │   └── build_features_tabular.py # Construit le dataset tabulaire par GP
-└── models/
-    ├── train_classical.py        # Classement / régression XGBoost + validation croisée temporelle
-    └── predict.py                # Prédit le top 10 de la qualification d'un GP à partir de ses essais libres
+├── models/
+│   ├── train_classical.py        # Classement / régression XGBoost + validation croisée temporelle
+│   └── predict.py                # Prédit le top 10 de la qualification d'un GP à partir de ses essais libres
+└── api/
+    └── main.py                   # API FastAPI (health, grands-prix, predict)
 tests/           # tests pytest sur des données fabriquées (ne dépendent pas de data/)
 
 data/            # données brutes, traitées et prédictions, exclues de git
@@ -168,4 +188,5 @@ Les tests n'utilisent jamais les vraies données (`data/raw/` est exclu de git, 
 - **pas de fuite** : la forme d'un pilote n'utilise que les GP antérieurs, repart à zéro chaque saison, et vaut la même chose à l'entraînement et en prédiction ;
 - **features et cibles** : écarts relatifs, tours non représentatifs ignorés, règle des 2 séances, pilote sans temps en Q3, position en double ;
 - **évaluation** : Spearman, blocs de validation toujours postérieurs à l'entraînement, ranker qui place bien le meilleur pilote en tête ;
-- **prédiction** : le modèle champion n'est jamais utilisé sur un GP qu'il a déjà vu.
+- **prédiction** : le modèle champion n'est jamais utilisé sur un GP qu'il a déjà vu ;
+- **API** : forme des réponses, erreur 404 sans essais libres, paramètres obligatoires.

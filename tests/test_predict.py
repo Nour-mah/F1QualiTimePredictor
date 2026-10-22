@@ -24,7 +24,7 @@ def test_retrain_when_champion_already_saw_the_gp(fake_models):
     model, description, features = predict.get_model('2026-10-03', ['gap'])
 
     assert model == 'réentraîné'
-    assert description == "avant 2026-10-03"
+    assert description.startswith("avant 2026-10-03")
     assert features == FEATURES
 
 

@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+from dataclasses import dataclass
 import mlflow
 import mlflow.xgboost
 import pandas as pd
@@ -15,6 +16,42 @@ from models.train_classical import (CHAMPION_ALIAS, FEATURE_GROUPS, MLFLOW_TRACK
 
 predictions_dir = os.path.join(PROJECT_ROOT, "data/predictions")
 REGISTERED_MODEL = TARGETS['position']['registered_model']
+DEFAULT_GROUPS = ['gap', 'history']
+
+
+class MissingPracticeData(Exception):
+    """Pas assez d'essais libres en local pour prédire ce GP."""
+
+
+@dataclass
+class Prediction:
+    year: int
+    gp_name: str
+    gp_date: str
+    model_description: str
+    features: list
+    ranking: pd.DataFrame   # toute la grille, triée par position prédite ; actual_position si le GP a déjà eu lieu
+
+    def evaluation(self):
+        """(pilotes du top 10 prédit réellement dans le top 10, Spearman sur le top 10 prédit), ou None si le GP n'a pas eu lieu."""
+        if 'actual_position' not in self.ranking:
+            return None
+        top10 = self.ranking.head(10)
+        correlation = spearmanr(top10['predicted_position'], top10['actual_position'], nan_policy='omit').statistic
+        return int((top10['actual_position'] <= 10).sum()), float(correlation)
+
+
+def champion_info():
+    """Version et date de fin d'entraînement du modèle 'champion', sans le charger (None s'il n'existe pas)."""
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    client = mlflow.MlflowClient()
+    try:
+        version = client.get_model_version_by_alias(REGISTERED_MODEL, CHAMPION_ALIAS)
+    except mlflow.exceptions.MlflowException:
+        return None
+    run = client.get_run(version.run_id)
+    return {'name': REGISTERED_MODEL, 'version': int(version.version), 'run_name': run.info.run_name,
+            'train_end_date': run.data.params['train_end_date']}
 
 
 def load_champion():
@@ -48,23 +85,24 @@ def get_model(gp_date, default_groups):
     if champion is None:
         df, _ = load_data()
         features = select_features(df, default_groups)
-        print(f"Aucun modèle '{CHAMPION_ALIAS}' dans le registre (lancer train_classical.py --promote) : réentraînement.")
-        return (*train_before(gp_date, features), features)
+        model, description = train_before(gp_date, features)
+        return model, f"{description}, aucun modèle '{CHAMPION_ALIAS}' dans le registre", features
 
     model, features, train_end_date, description = champion
     if gp_date > train_end_date:
         return model, description, features
     # Le champion a déjà vu ce GP : l'utiliser fausserait la comparaison avec le résultat réel
-    print(f"Le modèle '{CHAMPION_ALIAS}' a été entraîné jusqu'au {train_end_date}, ce GP en fait partie : réentraînement.")
-    return (*train_before(gp_date, features), features)
+    model, description = train_before(gp_date, features)
+    return model, f"{description}, le modèle '{CHAMPION_ALIAS}' ayant déjà vu ce GP", features
 
 
-def predict_gp(year, gp_name, default_groups):
+def predict_ranking(year, gp_name, default_groups=DEFAULT_GROUPS):
     """Prédit le classement de la qualification d'un GP à partir de ses essais libres (à lancer après fetch_fastf1.py)."""
     gp_date = get_gp_date(year, gp_name)
     new_gp = build_fp_features(year, gp_name)
     if gp_date is None or new_gp is None:
-        sys.exit(f"Pas assez d'essais libres dans data/raw pour {year} {gp_name} (au moins 2 séances) : lancer d'abord src/data/fetch_fastf1.py.")
+        raise MissingPracticeData(f"Pas assez d'essais libres dans data/raw pour {year} {gp_name} (au moins 2 séances) : "
+                                  "lancer d'abord src/data/fetch_fastf1.py.")
     new_gp = new_gp.merge(current_driver_form(gp_date), on='Driver', how='left')
     new_gp = new_gp.merge(current_team_form(gp_date), on='Team', how='left')
 
@@ -73,32 +111,41 @@ def predict_gp(year, gp_name, default_groups):
     # reindex : une séance annulée donne une colonne absente, remplacée par NaN
     new_gp['score'] = model.predict(new_gp.reindex(columns=features))
     new_gp['predicted_position'] = new_gp['score'].rank(ascending=False, method='first').astype(int)
-    new_gp = new_gp.sort_values('predicted_position')
+    new_gp = new_gp.sort_values('predicted_position').reset_index(drop=True)
 
-    print(f"\nPrédiction : {year} {gp_name} ({gp_date})")
-    print(f"Modèle : {model_description}")
-    print(f"Features : {features}\n")
-
-    columns = ['predicted_position', 'Driver', 'score'] + features
     results_path = os.path.join(raw_dir, f"{year}_{gp_name.replace(' ', '_')}_Q_results.csv")
     if os.path.exists(results_path):
-        # GP déjà couru : on compare au classement réel
+        # GP déjà couru : on ajoute le classement réel pour comparer
         actual = pd.read_csv(results_path)[['Abbreviation', 'Position']].drop_duplicates(subset='Position', keep='first')
         actual = actual.rename(columns={'Abbreviation': 'Driver', 'Position': 'actual_position'})
         new_gp = new_gp.merge(actual, on='Driver', how='left')
+
+    return Prediction(year, gp_name, gp_date, model_description, features, new_gp)
+
+
+def predict_gp(year, gp_name, default_groups):
+    """Version ligne de commande : affiche le top 10 et enregistre la grille complète dans data/predictions/."""
+    try:
+        prediction = predict_ranking(year, gp_name, default_groups)
+    except MissingPracticeData as error:
+        sys.exit(str(error))
+
+    print(f"\nPrédiction : {year} {gp_name} ({prediction.gp_date})")
+    print(f"Modèle : {prediction.model_description}")
+    print(f"Features : {prediction.features}\n")
+
+    columns = ['predicted_position', 'Driver', 'score'] + prediction.features
+    if 'actual_position' in prediction.ranking:
         columns.insert(2, 'actual_position')
+    print(prediction.ranking.head(10)[columns].round(3).to_string(index=False))
 
-    top10 = new_gp.head(10)
-    print(top10[columns].round(3).to_string(index=False))
-
-    if 'actual_position' in new_gp:
-        in_real_top10 = (top10['actual_position'] <= 10).sum()
-        correlation = spearmanr(top10['predicted_position'], top10['actual_position'], nan_policy='omit').statistic
-        print(f"\n{in_real_top10}/10 pilotes prédits sont dans le vrai top 10 | Spearman sur le top 10 prédit : {correlation:.3f}")
+    evaluation = prediction.evaluation()
+    if evaluation:
+        print(f"\n{evaluation[0]}/10 pilotes prédits sont dans le vrai top 10 | Spearman sur le top 10 prédit : {evaluation[1]:.3f}")
 
     os.makedirs(predictions_dir, exist_ok=True)
     output_path = os.path.join(predictions_dir, f"{year}_{gp_name.replace(' ', '_')}_prediction.csv")
-    new_gp[columns].to_csv(output_path, index=False)
+    prediction.ranking[columns].to_csv(output_path, index=False)
     print(f"\nPrédiction complète (toute la grille) enregistrée dans {os.path.relpath(output_path, PROJECT_ROOT)}")
 
 
@@ -106,7 +153,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prédit le top 10 de la qualification d'un Grand Prix à partir de ses essais libres.")
     parser.add_argument('--year', type=int, required=True)
     parser.add_argument('--gp', required=True, help="Nom du Grand Prix tel que dans FastF1, ex. 'United States Grand Prix'")
-    parser.add_argument('--features', nargs='+', default=['gap', 'history'], choices=sorted(FEATURE_GROUPS),
+    parser.add_argument('--features', nargs='+', default=DEFAULT_GROUPS, choices=sorted(FEATURE_GROUPS),
                         help=f"Groupes de features, utilisés seulement s'il n'existe pas de modèle '{CHAMPION_ALIAS}' (défaut : gap history)")
     args = parser.parse_args()
     predict_gp(args.year, args.gp, args.features)

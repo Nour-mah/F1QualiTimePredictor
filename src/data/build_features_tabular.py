@@ -12,6 +12,13 @@ HISTORY_WINDOW = 5  # nombre de qualifications précédentes prises en compte da
 COMPOUND_MAP = {'SOFT': 0, 'MEDIUM': 1, 'HARD': 2, 'INTERMEDIATE': 3, 'WET': 4}
 
 def load_session_laps(year, gp_name, session_name):
+    """
+    Renvoie un DataFrame avec les features de la session :
+        - gap au meilleur tour
+        - ratio de tours complets
+        - compound (composé de pneu) codé en entier
+    pour chaque pilote, ou None si le CSV n'existe pas.
+    """
     safe_event = gp_name.replace(" ", "_")
     filename = f"{year}_{safe_event}_{session_name}_laps.csv"
     path = os.path.join(raw_dir, filename)
@@ -46,7 +53,7 @@ def build_fp_features(year, gp_name):
     for session_name in ['FP1', 'FP2', 'FP3']:
         sessions[session_name] = load_session_laps(year, gp_name, session_name)
 
-    # Protection contre les sessions None
+    # Protection contre les sessions None (weekend annulé ou pas encore commencé)
     valid_sessions = [df for df in sessions.values() if df is not None]
     if len(valid_sessions) < 2:
         return None
@@ -118,6 +125,12 @@ def discover_gps():
         gp_name = match.group(2).replace("_", " ")
         gps.append((year, gp_name))
     return gps
+
+def discover_practice_gps():
+    """Liste les (year, gp_name) ayant au moins une séance d'essais libres dans raw_dir, y compris les GP à venir."""
+    pattern = re.compile(r"^(\d{4})_(.+)_FP[123]_laps\.csv$")
+    gps = {(int(m.group(1)), m.group(2).replace("_", " ")) for f in os.listdir(raw_dir) if (m := pattern.match(f))}
+    return sorted(gps)
 
 def get_gp_date(year, gp_name):
     """Date du GP au format AAAA-MM-JJ : celle de la qualification, à défaut celle de la dernière séance d'essais disponible (GP à venir)."""
