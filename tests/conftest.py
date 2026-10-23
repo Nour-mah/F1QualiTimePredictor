@@ -1,6 +1,6 @@
 """Données fabriquées pour les tests : de faux CSV au format de data/raw, écrits dans un dossier temporaire.
 
-Les tests ne lisent jamais le vrai data/raw (exclu de git, donc absent de la CI) : chaque valeur est choisie
+Les tests ne lisent jamais le vrai data/raw (exclu de git, donc absent d'un dépôt fraîchement cloné) : chaque valeur est choisie
 à la main, on sait donc exactement quel résultat attendre.
 """
 import pandas as pd

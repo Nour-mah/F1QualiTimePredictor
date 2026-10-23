@@ -1,85 +1,83 @@
 # F1 Quali Time Predictor
 
-Prédire l'ordre du top 10 de la qualification (Q3) d'un Grand Prix de Formule 1 à partir des essais libres (FP1 à FP3) et de la forme récente de chaque pilote. Les données viennent de [FastF1](https://github.com/theOehrly/Fast-F1).
+Prédire l'ordre du top 10 de la qualification d'un Grand Prix de Formule 1 à partir de ses essais libres (FP1 à FP3) et de la forme récente des pilotes, avec les données de [FastF1](https://github.com/theOehrly/Fast-F1).
 
-Ce projet de portfolio met autant l'accent sur les **pratiques MLOps et Docker** (pipelines reproductibles, suivi des expériences, déploiement en conteneur) que sur la modélisation. Il est en cours de construction et documenté au fil de l'eau.
+Ce projet de portfolio met autant l'accent sur les **pratiques MLOps** que sur la modélisation : suivi des expériences et registre de modèles avec MLflow, API de prédiction, conteneurisation avec Docker et tests automatisés.
 
-## Ce que fait le pipeline
+**En bref**
+- Un modèle de classement (`XGBRanker`) qui ordonne les pilotes de chaque Grand Prix, évalué par validation croisée temporelle sur 82 Grands Prix (2022-2026).
+- Spearman moyen de **0,627**, contre **0,544** pour l'ordre des essais libres, une référence volontairement exigeante.
+- Une prédiction disponible entre la dernière séance d'essais et la qualification, par une API ou en ligne de commande.
 
-Pour chaque Grand Prix :
-1. Il récupère les séances FP1, FP2, FP3 et la qualification via FastF1.
-2. Il calcule, pour chaque séance d'essais libres et pour chaque pilote (par rapport à tous les pilotes de la séance) :
-   - `FP{n}_gap_to_best_pct` : l'écart en % entre son meilleur tour et le meilleur tour de la séance
-   - `FP{n}_compound` : le pneu utilisé pour ce meilleur tour (0 = tendre, 1 = médium, 2 = dur, 3 = intermédiaire, 4 = pluie)
-   - `FP{n}_laps_ratio` : son nombre de tours propres divisé par le maximum de la séance
-3. Il ajoute la forme récente, calculée uniquement sur les GP antérieurs **de la même saison** :
-   - `driver_quali_pos_avg` : la position moyenne du pilote sur ses 5 dernières qualifications
-   - `team_quali_pos_avg` : la position moyenne des pilotes de son équipe sur ses 5 derniers GP
-4. Il calcule deux cibles à partir des résultats officiels de la qualification :
-   - `quali_position` : la position finale dans le top 10 (cible principale)
-   - `gap_to_pole_pct = (temps Q3 du pilote - temps de la pole) / temps de la pole * 100` (cible secondaire)
-5. Il construit une ligne par pilote et par Grand Prix, limitée au top 10 officiel, et trie le dataset chronologiquement.
+## Architecture
 
-Un pilote doit avoir au moins 2 séances d'essais libres valides. Les valeurs manquantes restent en `NaN` (pas d'imputation : XGBoost les gère nativement).
+```mermaid
+flowchart LR
+    FF[("API FastF1")] --> FETCH
+    subgraph PIPE["Conteneur pipeline"]
+        FETCH["fetch_fastf1.py"] --> BUILD["build_features_tabular.py"] --> TRAIN["train_classical.py"]
+    end
+    FETCH -.->|CSV par séance| DATA[("data/ sur la machine hôte")]
+    BUILD -.->|dataset horodaté| DATA
+    subgraph SRV["Conteneur mlflow"]
+        MLF[("Serveur MLflow : runs et registre de modèles")]
+    end
+    TRAIN -->|paramètres, métriques, modèle| MLF
+    subgraph APIC["Conteneur api"]
+        API["API FastAPI"]
+    end
+    MLF -->|modèle champion| API
+    DATA -->|essais libres du GP| API
+    USER(("Utilisateur")) -->|GET /predict| API
+```
 
-Période couverte : saisons 2022 à 2026, week-ends classiques uniquement, sans les week-ends sprint (82 Grands Prix, 820 lignes).
+1. **Collecte** : `fetch_fastf1.py` télécharge les séances depuis FastF1 et les écrit en CSV dans `data/raw/`.
+2. **Features** : `build_features_tabular.py` construit un dataset (une ligne par pilote et par Grand Prix) dans `data/processed/`.
+3. **Entraînement** : `train_classical.py` évalue le modèle, enregistre le run dans MLflow et ajoute le modèle au registre. Une version est désignée `champion`.
+4. **Prédiction** : l'API (ou `predict.py`) charge le `champion` et classe les pilotes d'un Grand Prix à partir de ses essais libres.
 
-## Approche de modélisation
+## Démarrage rapide avec Docker
 
-- **Apprentissage d'un classement (learning to rank).** La tâche principale est d'ordonner les 10 pilotes de chaque Grand Prix. Le modèle est donc un `XGBRanker`, entraîné avec un groupe par Grand Prix. Il est évalué par la **corrélation de Spearman** entre l'ordre prédit et l'ordre réel, calculée pour chaque Grand Prix puis moyennée (1 = ordre parfait).
-- **Une référence exigeante.** Le modèle est comparé à l'ordre de la dernière séance d'essais libres (FP3, à défaut FP2 puis FP1). C'est une référence bien plus difficile à battre que la prédiction d'une valeur constante.
-- **Validation temporelle.** Pas de découpage aléatoire : il ferait fuiter de l'information entre pilotes d'un même Grand Prix, et du futur vers le passé. L'évaluation se fait par **validation croisée temporelle**, par blocs de 10 Grands Prix (fenêtre d'entraînement croissante, 6 blocs).
-- **Des features relatives.** Les temps au tour dépendent du circuit : le modèle reçoit donc des écarts par rapport au meilleur tour de la séance.
-- **Une forme remise à zéro chaque saison.** Les changements d'équipe et de réglementation rendent l'historique de la saison précédente trompeur (par exemple Pérez, chez Red Bull en 2024 puis chez Cadillac en 2026). Au premier GP d'une saison, la forme vaut `NaN` pour tous les pilotes et le modèle s'appuie uniquement sur les essais libres.
-- **Un modèle volontairement simple.** Avec environ 800 lignes, les paramètres par défaut de XGBoost (profondeur 6) sur-apprennent et font moins bien que la référence. Le modèle utilise des arbres de profondeur 1, 100 arbres et un pas d'apprentissage de 0,05.
+Prérequis : Docker.
 
-### Résultats actuels (validation croisée temporelle, 6 blocs)
+```bash
+git clone https://github.com/Nour-mah/F1QualiTimePredictor.git
+cd F1QualiTimePredictor
+docker compose up -d --build                                                       # serveur MLflow + API
+docker compose run --rm pipeline python src/data/fetch_fastf1.py                   # collecte (plusieurs heures la première fois)
+docker compose run --rm pipeline python src/data/build_features_tabular.py         # dataset
+docker compose run --rm pipeline python src/models/train_classical.py --promote    # entraînement + modèle champion
+```
 
-Classement du top 10 (Spearman, plus haut = meilleur) :
+Puis :
+- **API** : http://localhost:8000/docs, par exemple `GET /predict` avec `year=2026` et `grand_prix=Bahrain Grand Prix`
+- **Interface MLflow** : http://localhost:5000, pour comparer les runs et voir le registre de modèles
+
+La collecte est longue car l'API FastF1 limite le nombre de requêtes par heure. Elle ne télécharge ensuite que les séances manquantes.
+
+## Résultats
+
+### Validation croisée temporelle (82 Grands Prix, 6 blocs)
+
+Classement du top 10, mesuré par la corrélation de Spearman entre l'ordre prédit et l'ordre réel (1 = ordre parfait) :
 
 | Modèle | Spearman (moyenne ± écart-type) |
 |---|---|
 | Référence : ordre des essais libres | 0,544 ± 0,110 |
-| XGBRanker, écarts FP seuls | 0,578 ± 0,086 |
+| XGBRanker, écarts en essais libres seuls | 0,578 ± 0,086 |
 | XGBRanker, forme du pilote seule | 0,566 ± 0,111 |
-| XGBRanker, écarts FP + forme de l'équipe | 0,606 ± 0,059 |
-| **XGBRanker, écarts FP + forme du pilote** | **0,627 ± 0,073** |
+| XGBRanker, écarts en essais libres + forme de l'équipe | 0,606 ± 0,059 |
+| **XGBRanker, écarts en essais libres + forme du pilote** | **0,627 ± 0,073** |
 | + forme de l'équipe | 0,614 ± 0,079 |
 | + pneus + ratio de tours | 0,627 ± 0,062 |
 
-Le rythme en essais libres et la forme récente se complètent : combinés, ils battent l'ordre des essais libres en moyenne. Le modèle est devant sur 5 des 6 blocs, et à égalité sur le plus récent (0,667 contre 0,669). L'amélioration est réelle mais modeste. Les hyperparamètres ont été choisis sur ces mêmes blocs, ce qui rend les scores légèrement optimistes.
+Le rythme en essais libres et la forme récente se complètent : combinés, ils battent l'ordre des essais libres en moyenne, et sur 5 des 6 blocs (égalité sur le plus récent, 0,667 contre 0,669). L'amélioration est réelle mais modeste. Les hyperparamètres ont été choisis sur ces mêmes blocs, ce qui rend les scores légèrement optimistes.
 
-La remise à zéro par saison améliore surtout le début de la saison 2026, la première de la nouvelle réglementation (Spearman de 0,54 à 0,62 au premier GP, de 0,77 à 0,86 au deuxième). Elle pénalise en revanche les débuts de saison stables, où l'historique de l'année précédente restait utile (premier GP de 2024 : de 0,75 à 0,36).
+Tâche secondaire, la prédiction de l'écart au pole (RMSE en points de pourcentage, plus bas = meilleur) : 0,858 pour le modèle, contre 0,902 pour une prédiction constante (la moyenne).
 
-Prédiction de l'écart au pole (RMSE en points de pourcentage, plus bas = meilleur) : 0,858 avec les écarts FP et la forme du pilote, contre 0,902 pour un modèle naïf qui prédit toujours la moyenne.
+### Grands Prix rejoués
 
-### Ce qui n'a pas marché
-
-- **Les temps au tour absolus** : ils dépendent du circuit et font bien pire que la référence naïve.
-- **La météo** (retirée) : identique pour tous les pilotes d'un GP, elle ne peut pas changer leur ordre. Ses valeurs absolues servent en plus d'empreinte du circuit et provoquent du sur-apprentissage.
-- **La forme de l'équipe** : utile seule, mais redondante avec celle du pilote, car deux coéquipiers qualifient en général proches l'un de l'autre. Elle reste disponible en option.
-- **Le pneu et le ratio de tours** : pas de gain mesurable (disponibles en option).
-
-## Suivi des expériences et registre de modèles (MLflow)
-
-Chaque lancement de `train_classical.py` est enregistré comme un run MLflow :
-- **paramètres** : cible, groupes de features, fichier de dataset, nombre de GP et de lignes, date du dernier GP d'entraînement, découpage des blocs, hyperparamètres XGBoost ;
-- **métriques** : score de chaque bloc pour le modèle et la référence, moyennes, écarts-types et `cv_gain_vs_reference` (positif quand le modèle fait mieux que la référence, quelle que soit la métrique) ;
-- **artefacts** : la liste des features (`features.json`) et le modèle final, entraîné sur tous les GP ;
-- **automatiquement** : le commit git du code et la date.
-
-Les métadonnées sont stockées dans une base SQLite (`mlflow.db`) et les fichiers dans `mlartifacts/`, à la racine du projet, hors de git.
-
-Chaque run ajoute une version au **registre de modèles** (`f1-quali-ranker` pour le classement). Une seule version porte l'alias `champion` : c'est elle que `predict.py` utilise. L'alias ne change que sur décision explicite (`--promote`), pour qu'une expérience ratée ne passe jamais en prédiction par accident.
-
-## Prédire un Grand Prix à venir
-
-`src/models/predict.py` prédit le top 10 de la qualification d'un Grand Prix dès que ses essais libres sont disponibles (entre la FP3 et la qualification). Il classe toute la grille et enregistre la prédiction dans `data/predictions/`.
-
-- **Pour un Grand Prix à venir**, il charge le modèle `champion` du registre, avec ses features.
-- **Pour un Grand Prix déjà vu par le champion**, il réentraîne le modèle sur les Grands Prix strictement antérieurs, pour éviter toute fuite d'information. Il affiche alors aussi les positions réelles, ce qui permet de rejouer un Grand Prix passé.
-
-Grands Prix rejoués (modèle entraîné uniquement sur les GP précédents) :
+Chaque Grand Prix est prédit par un modèle entraîné uniquement sur les Grands Prix précédents, comme en conditions réelles :
 
 | Grand Prix | Pilotes du top 10 prédit réellement dans le top 10 | Spearman sur le top 10 prédit |
 |---|---|---|
@@ -91,88 +89,94 @@ Grands Prix rejoués (modèle entraîné uniquement sur les GP précédents) :
 
 Le modèle identifie de façon fiable les pilotes qui accèdent à la Q3, mais l'ordre à l'intérieur du top 10 varie beaucoup d'un Grand Prix à l'autre.
 
-Limite connue : le modèle est entraîné sur les pilotes du top 10 uniquement, alors que la prédiction classe toute la grille. L'entraînement sur toute la grille est la prochaine étape de modélisation.
+### Prédiction à l'aveugle : Grand Prix des États-Unis 2026
 
-## API de prédiction
+Prédiction faite le samedi 24 octobre 2026, après la FP3 et avant la qualification, puis comparée au résultat réel. *(À compléter.)*
 
-Une API FastAPI expose les prédictions (`src/api/main.py`). Lancement depuis la racine du projet :
+## Données et features
 
-```bash
-uvicorn api.main:app --app-dir src
-```
+Pour chaque Grand Prix, et pour chaque pilote :
 
-Documentation interactive : http://127.0.0.1:8000/docs
+| Feature | Description |
+|---|---|
+| `FP{n}_gap_to_best_pct` | Écart en % entre son meilleur tour et le meilleur tour de la séance (tous pilotes confondus) |
+| `FP{n}_compound` | Pneu de ce meilleur tour (0 = tendre, 1 = médium, 2 = dur, 3 = intermédiaire, 4 = pluie) |
+| `FP{n}_laps_ratio` | Nombre de tours propres divisé par le maximum de la séance |
+| `driver_quali_pos_avg` | Position moyenne du pilote sur ses 5 dernières qualifications de la saison |
+| `team_quali_pos_avg` | Position moyenne des pilotes de son équipe sur ses 5 derniers Grands Prix de la saison |
+
+Cibles, issues des résultats officiels de la qualification :
+- `quali_position` : position finale dans le top 10 (cible principale) ;
+- `gap_to_pole_pct = (temps Q3 du pilote - temps de la pole) / temps de la pole × 100` (cible secondaire).
+
+Règles :
+- un pilote doit avoir au moins 2 séances d'essais libres valides (seuls les tours `IsAccurate` comptent) ;
+- les valeurs manquantes restent en `NaN`, sans imputation : XGBoost les gère nativement ;
+- les pilotes du top 10 sans temps en Q3 (accident, par exemple) sont gardés avec leur position officielle ;
+- période : saisons 2022 à 2026, week-ends classiques uniquement (les week-ends sprint n'ont qu'une séance d'essais libres), soit 82 Grands Prix et 820 lignes.
+
+## Approche de modélisation
+
+- **Apprentissage d'un classement (learning to rank).** La tâche est d'ordonner les pilotes de chaque Grand Prix. Le modèle est donc un `XGBRanker`, entraîné avec un groupe par Grand Prix, et évalué par la corrélation de Spearman calculée Grand Prix par Grand Prix puis moyennée.
+- **Une référence exigeante.** Le modèle est comparé à l'ordre de la dernière séance d'essais libres (FP3, à défaut FP2 puis FP1), bien plus difficile à battre qu'une prédiction constante.
+- **Validation temporelle.** Un découpage aléatoire ferait fuiter de l'information entre pilotes d'un même Grand Prix, et du futur vers le passé. L'évaluation se fait donc par blocs de 10 Grands Prix, chacun prédit par un modèle entraîné sur tous les Grands Prix précédents.
+- **Des features relatives.** Les temps au tour dépendent du circuit : le modèle reçoit des écarts au meilleur tour de la séance, comparables d'un circuit à l'autre.
+- **Une forme remise à zéro chaque saison.** Les changements d'équipe et de réglementation rendent la saison précédente trompeuse (Pérez, chez Red Bull en 2024 puis chez Cadillac en 2026). Au premier Grand Prix d'une saison, la forme vaut `NaN` pour tous et le modèle s'appuie uniquement sur les essais libres. C'est nettement mieux en 2026, première saison d'une nouvelle réglementation (Spearman de 0,54 à 0,62 au premier Grand Prix), mais moins bien lors d'une saison stable (premier Grand Prix de 2024 : de 0,75 à 0,36).
+- **Un modèle volontairement simple.** Avec environ 800 lignes, les paramètres par défaut de XGBoost (profondeur 6) sur-apprennent et font moins bien que la référence. Le modèle utilise des arbres de profondeur 1, 100 arbres et un pas d'apprentissage de 0,05.
+
+### Ce qui n'a pas marché
+
+- **Les temps au tour absolus** : ils dépendent du circuit et font bien pire qu'une prédiction constante.
+- **La météo** (retirée) : identique pour tous les pilotes d'un Grand Prix, elle ne peut pas changer leur ordre ; ses valeurs absolues servent en plus d'empreinte du circuit et provoquent du sur-apprentissage.
+- **La forme de l'équipe** : utile seule, mais redondante avec celle du pilote, car deux coéquipiers qualifient en général proches l'un de l'autre.
+- **Le pneu et le ratio de tours** : pas de gain mesurable.
+
+Ces features restent disponibles en option (`--features`) pour de futures expériences.
+
+## MLOps
+
+### Suivi des expériences et registre de modèles (MLflow)
+
+Chaque lancement de `train_classical.py` est un run MLflow qui enregistre :
+- **les paramètres** : cible, groupes de features, fichier de dataset, nombre de Grands Prix et de lignes, date du dernier Grand Prix d'entraînement, découpage des blocs, hyperparamètres ;
+- **les métriques** : score de chaque bloc pour le modèle et la référence, moyennes, écarts-types, et `cv_gain_vs_reference`, positif quand le modèle fait mieux que la référence quelle que soit la métrique ;
+- **les artefacts** : la liste des features (`features.json`) et le modèle final, entraîné sur tous les Grands Prix ;
+- **automatiquement** : le commit git du code et la date (hors Docker, où le dépôt git n'est pas copié).
+
+Chaque run ajoute une version au **registre de modèles** (`f1-quali-ranker`). Une seule version porte l'alias `champion`, celle qu'utilisent l'API et `predict.py`. L'alias ne change que sur décision explicite (`--promote`), pour qu'une expérience ratée ne passe jamais en production par accident.
+
+Le `champion` n'est utilisé que pour des Grands Prix postérieurs à ses données d'entraînement. Pour un Grand Prix qu'il a déjà vu, la prédiction réentraîne un modèle sur les Grands Prix antérieurs, afin de rejouer le passé sans fuite d'information.
+
+### API de prédiction (FastAPI)
 
 | Endpoint | Rôle |
 |---|---|
-| `GET /health` | État du service et modèle `champion` utilisé |
+| `GET /health` | État du service et version du modèle `champion` |
 | `GET /grands-prix` | Grands Prix dont les essais libres sont disponibles |
-| `GET /predict?year=2026&grand_prix=United States Grand Prix` | Top 10 et grille complète prédits ; pour un GP déjà couru, résultat réel et évaluation |
+| `GET /predict?year=2026&grand_prix=United States Grand Prix` | Top 10 et grille complète prédits ; pour un Grand Prix déjà couru, résultat réel et évaluation |
 
-L'API ne télécharge pas les données elle-même : la collecte (`fetch_fastf1.py`) reste une tâche séparée du pipeline. Un GP sans essais libres en local renvoie une erreur 404 qui l'indique.
+L'API ne télécharge pas les données : la collecte reste une tâche du pipeline, car elle est lente et limitée en requêtes. Un Grand Prix sans essais libres en local renvoie une erreur 404 qui l'indique.
 
-## Docker
-
-Toute l'application tourne dans des conteneurs, sans rien installer d'autre que Docker :
+### Docker
 
 | Service | Rôle | Port |
 |---|---|---|
-| `mlflow` | Serveur MLflow : runs, registre de modèles et fichiers des modèles, conservés dans le volume `mlflow-data` | 5000 |
-| `api` | API de prédiction, qui charge le modèle `champion` depuis le serveur MLflow | 8000 |
-| `pipeline` | Conteneur ponctuel pour la collecte, la construction du dataset, l'entraînement et la prédiction | — |
+| `mlflow` | Serveur MLflow ; runs, registre et fichiers des modèles conservés dans le volume `mlflow-data` | 5000 |
+| `api` | API de prédiction, qui charge le `champion` depuis le serveur MLflow | 8000 |
+| `pipeline` | Conteneur ponctuel pour la collecte, le dataset, l'entraînement et la prédiction | — |
 
-Le dossier `data/` de la machine est partagé avec les conteneurs. Les conteneurs ne dépendent d'aucun chemin de la machine hôte pour les modèles : ils passent tous par le serveur MLflow (`MLFLOW_TRACKING_URI=http://mlflow:5000`).
+Les trois services partagent la même image. Le dossier `data/` de la machine hôte est monté dans les conteneurs. Pour les modèles, les conteneurs ne dépendent d'aucun chemin de la machine hôte : ils passent tous par le serveur MLflow (`MLFLOW_TRACKING_URI=http://mlflow:5000`).
 
-```bash
-docker compose up -d --build                                                         # serveur MLflow + API
-docker compose run --rm pipeline python src/data/fetch_fastf1.py                     # collecte
-docker compose run --rm pipeline python src/data/build_features_tabular.py           # dataset
-docker compose run --rm pipeline python src/models/train_classical.py --promote      # entraînement + champion
-docker compose run --rm pipeline python src/models/predict.py --year 2026 --gp "United States Grand Prix"
-```
+### Tests
 
-API : http://localhost:8000/docs · Interface MLflow : http://localhost:5000
+Les 25 tests (pytest) n'utilisent jamais les vraies données : chacun écrit de petits CSV fabriqués dans un dossier temporaire, avec des valeurs choisies à la main. Ils vérifient en priorité ce qui pourrait casser sans erreur visible :
+- **pas de fuite** : la forme d'un pilote n'utilise que les Grands Prix antérieurs, repart à zéro chaque saison, et vaut la même chose à l'entraînement et en prédiction ;
+- **features et cibles** : écarts relatifs, tours non représentatifs ignorés, règle des 2 séances, pilote sans temps en Q3, position en double (pilote disqualifié) ;
+- **évaluation** : Spearman, blocs de validation toujours postérieurs à l'entraînement, ranker qui place bien le meilleur pilote en tête ;
+- **prédiction** : le `champion` n'est jamais utilisé sur un Grand Prix qu'il a déjà vu ;
+- **API** : forme des réponses, erreur 404, paramètres obligatoires.
 
-## Avancement
-
-- [x] Collecte des données FastF1 (`src/data/fetch_fastf1.py`)
-- [x] Construction des features par GP et du dataset complet (`src/data/build_features_tabular.py`)
-- [x] Modèle de classement avec validation croisée temporelle et groupes de features au choix (`src/models/train_classical.py`)
-- [x] Prédiction d'un Grand Prix à venir (`src/models/predict.py`)
-- [ ] Améliorer le modèle (entraînement sur toute la grille, écart au coéquipier, saisons supplémentaires)
-- [ ] Pipeline tensoriel pour un modèle PyTorch (phase 2)
-- [x] Suivi des expériences et registre de modèles (MLflow)
-- [x] Tests (pytest, données fabriquées)
-- [x] API de prédiction (FastAPI)
-- [x] Docker / docker-compose (serveur MLflow, API, pipeline)
-- [ ] CI/CD
-- [ ] Versioning des données (DVC)
-
-## Outils
-
-Python, pandas, FastF1, scikit-learn, SciPy, XGBoost, MLflow, FastAPI, Docker, pytest. Prévus : PyTorch, DVC.
-
-## Structure du dépôt
-
-```
-src/
-├── data/
-│   ├── fetch_fastf1.py           # Récupère les séances depuis FastF1
-│   └── build_features_tabular.py # Construit le dataset tabulaire par GP
-├── models/
-│   ├── train_classical.py        # Classement / régression XGBoost + validation croisée temporelle
-│   └── predict.py                # Prédit le top 10 de la qualification d'un GP à partir de ses essais libres
-└── api/
-    └── main.py                   # API FastAPI (health, grands-prix, predict)
-tests/           # tests pytest sur des données fabriquées (ne dépendent pas de data/)
-Dockerfile, docker-compose.yml   # image et services (MLflow, API, pipeline)
-
-data/            # données brutes, traitées et prédictions, exclues de git
-mlflow.db        # base MLflow (runs, registre de modèles), exclue de git
-mlartifacts/     # artefacts MLflow (modèles, features.json), exclus de git
-```
-
-## Lancer le pipeline
+## Utilisation sans Docker
 
 Installation (Python 3.12) :
 
@@ -180,36 +184,51 @@ Installation (Python 3.12) :
 pip install -r requirements-dev.txt
 ```
 
-```bash
-cd src/data
-python fetch_fastf1.py            # remplit data/raw/ en ignorant les séances déjà téléchargées et les week-ends pas encore commencés
-python build_features_tabular.py  # construit data/processed/tabular/F1_features_dataset_<horodatage>.csv
-
-cd ../models
-python train_classical.py                                      # classement du top 10, features : écarts FP + forme du pilote
-python train_classical.py --features gap history team compound laps   # groupes de features : gap, history, team, compound, laps
-python train_classical.py --target gap                         # tâche secondaire : régression de l'écart au pole
-python train_classical.py --promote                            # désigne le modèle de ce run comme champion
-python predict.py --year 2026 --gp "United States Grand Prix"  # top 10 prédit (lancer d'abord fetch_fastf1.py après la FP3)
-```
-
-Explorer les runs dans l'interface MLflow (depuis la racine du projet, puis ouvrir http://127.0.0.1:5000) :
+En local, MLflow utilise une base SQLite (`mlflow.db`) et le dossier `mlartifacts/`, à la racine du projet.
 
 ```bash
-mlflow ui --backend-store-uri sqlite:///mlflow.db
+python src/data/fetch_fastf1.py                                       # collecte
+python src/data/build_features_tabular.py                             # dataset
+python src/models/train_classical.py                                  # évaluation, features par défaut : gap + history
+python src/models/train_classical.py --features gap history team      # autres groupes : compound, laps, team
+python src/models/train_classical.py --target gap                     # tâche secondaire : écart au pole
+python src/models/train_classical.py --promote                        # désigne le modèle de ce run comme champion
+python src/models/predict.py --year 2026 --gp "United States Grand Prix"
+uvicorn api.main:app --app-dir src                                    # API sur http://127.0.0.1:8000/docs
+mlflow ui --backend-store-uri sqlite:///mlflow.db                     # interface MLflow sur http://127.0.0.1:5000
+pytest                                                                # tests
 ```
 
-Après chaque nouveau Grand Prix couru : relancer `fetch_fastf1.py`, `build_features_tabular.py` puis `train_classical.py --promote`, pour que le champion profite des nouvelles données.
+Après chaque nouveau Grand Prix couru, relancer la collecte, le dataset puis `train_classical.py --promote`, pour que le `champion` profite des nouvelles données.
 
-## Tests
+## Structure du dépôt
 
-```bash
-pytest
+```
+src/
+├── data/
+│   ├── fetch_fastf1.py             # collecte des séances depuis FastF1
+│   └── build_features_tabular.py   # features et dataset par Grand Prix
+├── models/
+│   ├── train_classical.py          # entraînement, validation croisée temporelle, MLflow
+│   └── predict.py                  # prédiction d'un Grand Prix
+└── api/
+    └── main.py                     # API FastAPI
+tests/                              # tests pytest sur données fabriquées
+Dockerfile, docker-compose.yml      # image et services (mlflow, api, pipeline)
+requirements.txt                    # dépendances (versions figées)
+requirements-dev.txt                # + outils de test
+
+data/, mlflow.db, mlartifacts/      # données et suivi MLflow, générés localement, exclus de git
 ```
 
-Les tests n'utilisent jamais les vraies données (`data/raw/` est exclu de git, donc absent de la CI) : chacun écrit de petits CSV fabriqués dans un dossier temporaire, avec des valeurs choisies à la main. Ils vérifient en priorité ce qui pourrait casser sans erreur visible :
-- **pas de fuite** : la forme d'un pilote n'utilise que les GP antérieurs, repart à zéro chaque saison, et vaut la même chose à l'entraînement et en prédiction ;
-- **features et cibles** : écarts relatifs, tours non représentatifs ignorés, règle des 2 séances, pilote sans temps en Q3, position en double ;
-- **évaluation** : Spearman, blocs de validation toujours postérieurs à l'entraînement, ranker qui place bien le meilleur pilote en tête ;
-- **prédiction** : le modèle champion n'est jamais utilisé sur un GP qu'il a déjà vu ;
-- **API** : forme des réponses, erreur 404 sans essais libres, paramètres obligatoires.
+## Limites et pistes
+
+- **Entraîné sur le top 10 uniquement** : la prédiction classe pourtant toute la grille, y compris des pilotes que le modèle n'a jamais vus hors du top 10. Entraîner sur toute la grille est la prochaine étape.
+- **Peu de données** : 82 Grands Prix. Ajouter les saisons 2018 à 2021 donnerait environ 80 Grands Prix de plus, mais d'une autre réglementation.
+- **Ordre à l'intérieur du top 10** : le modèle trouve bien qui accède à la Q3, beaucoup moins l'ordre exact. Des features comme l'écart au coéquipier, ou un poids plus fort pour la FP3, pourraient aider.
+- **Versioning des données** : le dataset est tracé par son nom de fichier ; DVC permettrait de le versionner avec le code.
+- **Automatisation** : la collecte, l'entraînement et la promotion du `champion` restent manuels ; un pipeline planifié (CD) pourrait les lancer après chaque Grand Prix.
+
+## Outils
+
+Python 3.12, pandas, FastF1, XGBoost, scikit-learn, SciPy, MLflow, FastAPI, Docker, pytest.
