@@ -95,6 +95,7 @@ Chaque Grand Prix est prédit par un modèle entraîné uniquement sur les Grand
 | Grand Prix | Pilotes du top 10 prédit réellement dans le top 10 | Spearman sur le top 10 prédit |
 |---|---|---|
 | Bahreïn 2026 | 10 / 10 | 0,75 |
+| Belgique 2026 | 9 / 10 | 0,92 |
 | Espagne 2026 | 9 / 10 | 0,81 |
 | Italie 2026 | 8 / 10 | 0,73 |
 | Azerbaïdjan 2026 | 8 / 10 | 0,25 |
@@ -104,7 +105,22 @@ Le modèle identifie de façon fiable les pilotes qui accèdent à la Q3, mais l
 
 ### Prédiction à l'aveugle : Grand Prix des États-Unis 2026
 
-Prédiction faite le samedi 24 octobre 2026, après la FP3 et avant la qualification, puis comparée au résultat réel. *(À compléter.)*
+Prédiction faite le samedi 24 octobre 2026, après la FP3 et **avant la qualification** (l'heure du commit en fait foi), par le modèle `champion` (`f1-quali-ranker` version 2, entraîné jusqu'au 3 octobre 2026), à partir des trois séances d'essais libres :
+
+| Position prédite | Pilote | Position réelle |
+|---|---|---|
+| 1 | Leclerc (LEC) | *à venir* |
+| 2 | Verstappen (VER) | *à venir* |
+| 3 | Hamilton (HAM) | *à venir* |
+| 4 | Antonelli (ANT) | *à venir* |
+| 5 | Norris (NOR) | *à venir* |
+| 6 | Piastri (PIA) | *à venir* |
+| 7 | Russell (RUS) | *à venir* |
+| 8 | Hadjar (HAD) | *à venir* |
+| 9 | Gasly (GAS) | *à venir* |
+| 10 | Lawson (LAW) | *à venir* |
+
+Le résultat réel et l'évaluation seront ajoutés après la qualification.
 
 ## Données et features
 
