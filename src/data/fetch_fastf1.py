@@ -60,7 +60,9 @@ def session_loader():
                     # qui ralentissaient fortement la collecte et faisaient grossir le cache
                     session.load(telemetry=False, weather=False, laps=True, messages=False)
 
-                    session.laps.to_csv(files['laps'], index=False)
+                    # Sans télémétrie, FastF1 ne calcule pas LapStartDate : on garde l'heure de début de la séance (UTC)
+                    # pour que build_features_tabular.get_gp_date puisse dater le GP
+                    session.laps.assign(SessionDate=session.date).to_csv(files['laps'], index=False)
                     if session_name == 'Q':
                         session.results.to_csv(files['results'], index=False)
 

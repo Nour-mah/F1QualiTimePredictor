@@ -133,15 +133,18 @@ def discover_practice_gps():
     return sorted(gps)
 
 def get_gp_date(year, gp_name):
-    """Date du GP au format AAAA-MM-JJ : celle de la qualification, à défaut celle de la dernière séance d'essais disponible (GP à venir)."""
+    """Date du GP au format AAAA-MM-JJ : celle de la qualification, à défaut celle de la dernière séance d'essais disponible (GP à venir).
+    Elle vient de LapStartDate, ou de SessionDate (début de séance) pour les fichiers téléchargés sans télémétrie."""
     safe_event = gp_name.replace(" ", "_")
     for session_name in ['Q', 'FP3', 'FP2', 'FP1']:
         laps_path = os.path.join(raw_dir, f"{year}_{safe_event}_{session_name}_laps.csv")
         if not os.path.exists(laps_path):
             continue
-        timestamps = pd.read_csv(laps_path, usecols=['LapStartDate'])['LapStartDate'].dropna()
-        if not timestamps.empty:
-            return timestamps.iloc[0].split(' ')[0]
+        laps = pd.read_csv(laps_path)
+        for column in ['LapStartDate', 'SessionDate']:
+            timestamps = laps[column].dropna() if column in laps else pd.Series(dtype=object)
+            if not timestamps.empty:
+                return str(timestamps.iloc[0]).split(' ')[0]
     return None
 
 

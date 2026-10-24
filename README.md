@@ -38,7 +38,7 @@ flowchart LR
 
 ## Identifiants Formula 1
 
-Depuis octobre 2026, la F1 n'autorise le téléchargement des données qu'avec un compte Formula 1 disposant d'un abonnement F1 TV. FastF1 (à partir de la version 3.9.0) s'y connecte avec les variables `F1_USERNAME` et `F1_PASSWORD`. Les données déjà téléchargées restent utilisables sans connexion.
+Depuis octobre 2026, la F1 n'autorise le téléchargement des données qu'avec un compte Formula 1 (un compte gratuit suffit). FastF1 (à partir de la version 3.9.0) s'y connecte avec les variables `F1_USERNAME` et `F1_PASSWORD`. Les données déjà téléchargées restent utilisables sans connexion.
 
 Créer à la racine du projet un fichier `.env` contenant ses identifiants :
 

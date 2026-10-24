@@ -5,6 +5,8 @@ seul un test peut la détecter.
 """
 import math
 
+import pandas as pd
+
 from data.build_features_tabular import build_driver_history, current_driver_form, discover_gps, get_gp_date
 
 
@@ -15,6 +17,16 @@ def three_gps(raw):
     raw.quali(2024, 'Australian Grand Prix', [{'Driver': 'VER', 'Position': 5}, {'Driver': 'LEC', 'Position': 4}], date="2024-03-23")
     raw.quali(2025, 'Bahrain Grand Prix', [{'Driver': 'VER', 'Position': 2}, {'Driver': 'LEC', 'Position': 1}], date="2025-03-01")
     return {gp: get_gp_date(*gp) for gp in discover_gps()}
+
+
+def test_gp_date_falls_back_on_session_start(raw):
+    # Fichiers téléchargés sans télémétrie : LapStartDate est vide, la date vient du début de séance
+    raw.laps(2026, 'United States Grand Prix', 'FP1', [{'Driver': 'VER', 'seconds': 95}])
+    path = raw.path / "2026_United_States_Grand_Prix_FP1_laps.csv"
+    laps = pd.read_csv(path).assign(LapStartDate=None, SessionDate="2026-10-23 17:30:00")
+    laps.to_csv(path, index=False)
+
+    assert get_gp_date(2026, 'United States Grand Prix') == "2026-10-23"
 
 
 def form_of(history, driver, date):

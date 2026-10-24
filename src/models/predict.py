@@ -108,8 +108,11 @@ def predict_ranking(year, gp_name, default_groups=DEFAULT_GROUPS):
 
     model, model_description, features = get_model(gp_date, default_groups)
 
-    # reindex : une séance annulée donne une colonne absente, remplacée par NaN
-    new_gp['score'] = model.predict(new_gp.reindex(columns=features))
+    # Une séance pas encore disputée (FP3 avant samedi) ou annulée donne une colonne absente : on l'ajoute en NaN
+    for feature in features:
+        if feature not in new_gp:
+            new_gp[feature] = float('nan')
+    new_gp['score'] = model.predict(new_gp[features])
     new_gp['predicted_position'] = new_gp['score'].rank(ascending=False, method='first').astype(int)
     new_gp = new_gp.sort_values('predicted_position').reset_index(drop=True)
 
