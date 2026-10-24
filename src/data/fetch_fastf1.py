@@ -18,10 +18,7 @@ os.makedirs(export_dir, exist_ok=True)
 def session_files(year, event, session_name):
     """Chemins des CSV attendus pour une session (les résultats n'existent que pour la qualification)."""
     filename_base = f"{year}_{event.replace(' ', '_')}_{session_name}"
-    files = {
-        'laps': os.path.join(export_dir, f"{filename_base}_laps.csv"),
-        'weather': os.path.join(export_dir, f"{filename_base}_weather.csv"),
-    }
+    files = {'laps': os.path.join(export_dir, f"{filename_base}_laps.csv")}
     if session_name == 'Q':
         files['results'] = os.path.join(export_dir, f"{filename_base}_results.csv")
     return files
@@ -52,10 +49,11 @@ def session_loader():
 
                 try:
                     session = fastf1.get_session(year, event, session_name)
-                    session.load(telemetry=True, weather=True, laps=True, messages=False)
+                    # Seuls les tours (et les résultats de la qualif) servent au projet : ni météo ni télémétrie,
+                    # qui ralentissaient fortement la collecte et faisaient grossir le cache
+                    session.load(telemetry=False, weather=False, laps=True, messages=False)
 
                     session.laps.to_csv(files['laps'], index=False)
-                    session.weather_data.to_csv(files['weather'], index=False)
                     if session_name == 'Q':
                         session.results.to_csv(files['results'], index=False)
 
