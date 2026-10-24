@@ -2,8 +2,15 @@ import os
 import time
 import datetime
 import fastf1
+from dotenv import dotenv_values
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Identifiants Formula 1 lus dans le fichier .env (exclu de git), sans écraser des variables déjà définies.
+# Les valeurs vides sont ignorées : FastF1 demande alors les identifiants dans le terminal.
+for key, value in dotenv_values(os.path.join(BASE_DIR, '../../.env')).items():
+    if value and key not in os.environ:
+        os.environ[key] = value
 
 # Activation du cache
 cache_dir = os.path.join(BASE_DIR, '../../data/cache')

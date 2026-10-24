@@ -1,5 +1,7 @@
 # Seuls requirements.txt et src/ sont copiés dans l'image ; on exclut le reste du contexte de build
 # (data/cache pèse plusieurs Go : sans cette exclusion, chaque build l'enverrait à Docker)
+# Secrets : transmis aux conteneurs au lancement (env_file), jamais copiés dans l'image
+.env
 data/
 mlflow.db
 mlartifacts/

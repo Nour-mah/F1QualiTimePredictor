@@ -12,6 +12,10 @@ x-app: &app
     MLFLOW_TRACKING_URI: http://mlflow:5000
     # Le dépôt git n'est pas copié dans l'image : MLflow ne peut pas lire le commit, on évite l'avertissement
     GIT_PYTHON_REFRESH: quiet
+  # Identifiants Formula 1 lus dans .env au lancement (facultatif : sans .env, les conteneurs démarrent quand même)
+  env_file:
+    - path: .env
+      required: false
   volumes:
     # Données de l'hôte (brutes, cache FastF1, dataset, prédictions) : partagées et conservées hors des conteneurs
     - ./data:/app/data
