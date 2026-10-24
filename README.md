@@ -40,10 +40,11 @@ flowchart LR
 
 Depuis octobre 2026, la F1 n'autorise le téléchargement des données qu'avec un compte Formula 1 disposant d'un abonnement F1 TV. FastF1 (à partir de la version 3.9.0) s'y connecte avec les variables `F1_USERNAME` et `F1_PASSWORD`. Les données déjà téléchargées restent utilisables sans connexion.
 
-Copier le modèle, puis y renseigner ses identifiants :
+Créer à la racine du projet un fichier `.env` contenant ses identifiants :
 
-```bash
-cp .env.example .env
+```
+F1_USERNAME=adresse@exemple.com
+F1_PASSWORD=mot_de_passe
 ```
 
 Le fichier `.env` est exclu de git et de l'image Docker. `fetch_fastf1.py` le lit automatiquement, et docker-compose le transmet aux conteneurs au lancement. Sans `.env`, FastF1 demande les identifiants dans le terminal.
@@ -55,7 +56,6 @@ Prérequis : Docker, et un fichier `.env` rempli (voir ci-dessus) pour la collec
 ```bash
 git clone https://github.com/Nour-mah/F1QualiTimePredictor.git
 cd F1QualiTimePredictor
-cp .env.example .env                                                               # puis y renseigner ses identifiants
 docker compose up -d --build                                                       # serveur MLflow + API
 docker compose run --rm pipeline python src/data/fetch_fastf1.py                   # collecte (plusieurs heures la première fois)
 docker compose run --rm pipeline python src/data/build_features_tabular.py         # dataset
@@ -230,7 +230,6 @@ tests/                              # tests pytest sur données fabriquées
 Dockerfile, docker-compose.yml      # image et services (mlflow, api, pipeline)
 requirements.txt                    # dépendances (versions figées)
 requirements-dev.txt                # + outils de test
-.env.example                        # modèle du fichier .env (identifiants Formula 1, jamais commité)
 
 data/, mlflow.db, mlartifacts/      # données et suivi MLflow, générés localement, exclus de git
 ```
