@@ -27,7 +27,9 @@ def load_session_laps(year, gp_name, session_name):
         return None
     
     df = pd.read_csv(path)
-    df = df[df["IsAccurate"]]
+    # On ne conservee que les tours représentatifs : chronométrage fiable (IsAccurate) et non annulés par la direction de course
+    deleted = df['Deleted'].fillna(False).astype(bool) if 'Deleted' in df else False
+    df = df[df["IsAccurate"] & ~deleted]
 
     df['LapTime'] = pd.to_timedelta(df['LapTime'])
 

@@ -27,6 +27,7 @@ class FakeRaw:
             'Compound': lap.get('compound', 'SOFT'),
             'Team': lap.get('team', 'Team A'),
             'LapStartDate': f"{date} 14:00:00.000",
+            'Deleted': lap.get('deleted', False)
         } for lap in laps]
         pd.DataFrame(rows).to_csv(self._file(year, gp_name, f"{session}_laps"), index=False)
 

@@ -7,6 +7,18 @@ from data.build_features_tabular import build_fp_features, build_gp_features, lo
 
 GP = (2024, 'Bahrain Grand Prix')
 
+def test_deleted_laps_are_ignored(raw):
+    # Cas réel d'Austin 2026 en FP1 : le meilleur tour de VER a été annulé pour limites de piste
+    raw.laps(*GP, 'FP1', [
+        {'Driver': 'VER', 'seconds': 88.0, 'deleted': True},
+        {'Driver': 'VER', 'seconds': 91.8},
+        {'Driver': 'LEC', 'seconds': 90.0},
+    ])
+
+    session = load_session_laps(*GP, 'FP1')
+
+    assert session.loc['LEC', 'FP1_gap_to_best_pct'] == 0
+    assert session.loc['VER', 'FP1_gap_to_best_pct'] == pytest.approx(2.0)
 
 def test_gap_is_relative_to_session_best(raw):
     raw.laps(*GP, 'FP1', [{'Driver': 'VER', 'seconds': 90.0}, {'Driver': 'LEC', 'seconds': 91.8}])

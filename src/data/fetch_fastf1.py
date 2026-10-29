@@ -1,7 +1,8 @@
 import os
 import time
-import datetime
 import fastf1
+import datetime
+import pandas as pd
 from dotenv import dotenv_values
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -30,6 +31,14 @@ def session_files(year, event, session_name):
         files['results'] = os.path.join(export_dir, f"{filename_base}_results.csv")
     return files
 
+def is_complete(session_name, files):
+    """Une séance est complète si ses fichiers existent et, pour les essais libres, si les tours annulés y sont connus."""
+    if not all(os.path.exists(path) for path in files.values()):
+        return False
+    if session_name == 'Q':
+        return True   # le projet n'utilise que les résultats officiels de la qualification
+    # Fichiers téléchargés sans les messages de course : colonne Deleted vide, à retélécharger
+    return pd.read_csv(files['laps'], usecols=['Deleted'])['Deleted'].notna().any()
 
 def session_loader():
     """
@@ -51,14 +60,14 @@ def session_loader():
 
             for session_name in ['FP1', 'FP2', 'FP3', 'Q']:
                 files = session_files(year, event, session_name)
-                if all(os.path.exists(path) for path in files.values()):
+                if is_complete(session_name, files):
                     continue
 
                 try:
                     session = fastf1.get_session(year, event, session_name)
                     # Seuls les tours (et les résultats de la qualif) servent au projet : ni météo ni télémétrie,
                     # qui ralentissaient fortement la collecte et faisaient grossir le cache
-                    session.load(telemetry=False, weather=False, laps=True, messages=False)
+                    session.load(telemetry=False, weather=False, laps=True, messages=True)
 
                     # Sans télémétrie, FastF1 ne calcule pas LapStartDate : on garde l'heure de début de la séance (UTC)
                     # pour que build_features_tabular.get_gp_date puisse dater le GP
