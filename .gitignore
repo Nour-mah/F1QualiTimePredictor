@@ -253,3 +253,5 @@ mlflow.db
 
 # === Project-specific files ===
 *.png
+*.docx
+*.pdf
