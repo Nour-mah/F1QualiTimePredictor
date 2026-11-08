@@ -105,7 +105,7 @@ Le modèle identifie de façon fiable les pilotes qui accèdent à la Q3, mais l
 
 ### Prédiction à l'aveugle : Grand Prix des États-Unis 2026
 
-Prédiction faite le samedi 24 octobre 2026, après la FP3 et **avant la qualification** (l'heure du commit en fait foi), par le modèle `champion` (`f1-quali-ranker` version 2, entraîné jusqu'au 3 octobre 2026), à partir des trois séances d'essais libres :
+Prédiction faite le samedi 24 octobre 2026, après la FP3 et **avant la qualification**, par le modèle `champion` (`f1-quali-ranker` version 2, entraîné jusqu'au 3 octobre 2026), à partir des trois séances d'essais libres :
 
 | Position prédite | Pilote | Position réelle |
 |---|---|---|
