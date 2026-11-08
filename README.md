@@ -109,18 +109,37 @@ Prédiction faite le samedi 24 octobre 2026, après la FP3 et **avant la qualifi
 
 | Position prédite | Pilote | Position réelle |
 |---|---|---|
-| 1 | Leclerc (LEC) | *à venir* |
-| 2 | Verstappen (VER) | *à venir* |
-| 3 | Hamilton (HAM) | *à venir* |
-| 4 | Antonelli (ANT) | *à venir* |
-| 5 | Norris (NOR) | *à venir* |
-| 6 | Piastri (PIA) | *à venir* |
-| 7 | Russell (RUS) | *à venir* |
-| 8 | Hadjar (HAD) | *à venir* |
-| 9 | Gasly (GAS) | *à venir* |
-| 10 | Lawson (LAW) | *à venir* |
+| 1 | Leclerc (LEC) | 4 |
+| 2 | Verstappen (VER) | 2 |
+| 3 | Hamilton (HAM) | 5 |
+| 4 | Antonelli (ANT) | 1 |
+| 5 | Norris (NOR) | 8 |
+| 6 | Piastri (PIA) | 7 |
+| 7 | Russell (RUS) | 6 |
+| 8 | Hadjar (HAD) | 3 |
+| 9 | Gasly (GAS) | 11 |
+| 10 | Lawson (LAW) | 10 |
 
-Le résultat réel et l'évaluation seront ajoutés après la qualification.
+**Résultat : 9 pilotes du top 10 prédit sur 10 réellement dans le top 10, Spearman de 0,64 sur le top 10 prédit.** Antonelli, prédit 4e, a signé la pole ; Gasly, prédit 9e, a terminé 11e.
+
+**Bug découvert après coup.** Les tours annulés par la direction de course (limites de piste) étaient comptés comme valides. À Austin, 54 tours avaient été annulés en FP1, dont le meilleur tour de Verstappen, et 29 en FP3, dont celui de Leclerc : la prédiction ci-dessus repose donc en partie sur des tours qui n'existaient pas officiellement. Les tours annulés sont désormais exclus, et un test vérifie qu'ils le restent.
+
+Le même Grand Prix rejoué après la correction, avec un modèle entraîné uniquement sur les Grands Prix précédents (ce n'est plus une prédiction à l'aveugle) :
+
+| Position prédite | Pilote | Position réelle |
+|---|---|---|
+| 1 | Verstappen (VER) | 2 |
+| 2 | Leclerc (LEC) | 4 |
+| 3 | Hamilton (HAM) | 5 |
+| 4 | Russell (RUS) | 6 |
+| 5 | Antonelli (ANT) | 1 |
+| 6 | Piastri (PIA) | 7 |
+| 7 | Norris (NOR) | 8 |
+| 8 | Hadjar (HAD) | 3 |
+| 9 | Gasly (GAS) | 11 |
+| 10 | Hülkenberg (HUL) | 12 |
+
+Rejeu corrigé : 8 / 10, Spearman de 0,66. Il trouve un pilote de moins (Lawson remplacé par Hülkenberg) mais ordonne un peu mieux le top 10 : sur un seul Grand Prix, l'écart entre les deux versions n'est pas significatif.
 
 ## Données et features
 
